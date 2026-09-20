@@ -1,0 +1,363 @@
+import logging
+from datetime import datetime, timedelta, timezone
+from app.chat import ui
+from app.core.dependencies import get_book_service, get_reading_service
+from app.core.exceptions import ReadingLimitError, ExternalServiceError
+
+logger = logging.getLogger(__name__)
+
+# Tool schemas — these get bound to the LLM via bind_tools()
+LOG_READING_DEF = {
+    "type": "function",
+    "function": {
+        "name": "log_reading",
+        "description": "Log reading progress for a tracked book. Default action is 'add' (log pages read).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "book_title": {"type": "string", "description": "Title of the book."},
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "set", "reduce", "remove"],
+                },
+                "pages": {"type": "integer"},
+                "percentage": {"type": "number"},
+                "date": {"type": "string"},
+            },
+            "required": ["book_title"],
+        },
+    },
+}
+
+SEARCH_BOOKS_DEF = {
+    "type": "function",
+    "function": {
+        "name": "search_books",
+        "description": "Search for books by title, author name, or general query.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "search_by": {"type": "string", "enum": ["title", "author"]},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+SHOW_PROGRESS_DEF = {
+    "type": "function",
+    "function": {
+        "name": "show_progress",
+        "description": "Show reading progress.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "book_title": {"type": "string"},
+                "filter": {"type": "string", "enum": ["completed", "in_progress", "not_started"]},
+            },
+        },
+    },
+}
+
+START_TRACKING_DEF = {
+    "type": "function",
+    "function": {
+        "name": "start_tracking",
+        "description": "Start tracking a book.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "book_title": {"type": "string"},
+            },
+            "required": ["book_title"],
+        },
+    },
+}
+
+TOOL_DEFINITIONS = [LOG_READING_DEF, SEARCH_BOOKS_DEF, SHOW_PROGRESS_DEF, START_TRACKING_DEF]
+
+
+def _parse_date(date_str: str | None) -> datetime | None:
+    if not date_str:
+        return None
+    d = date_str.lower().strip()
+    if d == "today":
+        return datetime.now(timezone.utc)
+    if d == "yesterday":
+        return datetime.now(timezone.utc) - timedelta(days=1)
+    try:
+        return datetime.fromisoformat(date_str)
+    except ValueError:
+        return datetime.now(timezone.utc)
+
+
+async def _resolve_book(title: str, conn):
+    """Shared helper: resolve a book title or return an error response dict.
+    Returns (book, None) on success, (None, error_dict) on failure."""
+    if not title:
+        return None, {
+            "elements": [ui.text("Which book? Try: **I read 50 pages of Harry Potter**", style="warning")],
+            "suggestions": ["Show my progress", "Help"],
+            "metadata_updates": {},
+        }
+
+    try:
+        book_service = get_book_service(conn)
+        book = await book_service.resolve_book(title)
+    except ExternalServiceError as e:
+        return None, {
+            "elements": [ui.text(f"Search failed: {e.message}", style="error")],
+            "suggestions": ["Try again", "Help"],
+            "metadata_updates": {},
+        }
+    if not book:
+        return None, {
+            "elements": [
+                ui.text(f"I couldn't find a book matching **'{title}'**.", style="warning"),
+                ui.action_buttons([ui.button("Search Books", "search_books", "primary", {"query": title})]),
+            ],
+            "suggestions": ["Search books", "Help"],
+            "metadata_updates": {},
+        }
+    return book, None
+
+
+async def execute_log_reading(args: dict, context: dict) -> dict:
+    book_title = args.get("book_title", "")
+    action = args.get("action", "add")
+    pages = args.get("pages")
+    percentage = args.get("percentage")
+    date_str = args.get("date")
+    conn = context.get("conn")
+    user = context.get("user")
+
+    book, err = await _resolve_book(book_title, conn)
+    if err:
+        return err
+
+    reading_service = get_reading_service(conn)
+
+    if action == "remove":
+        await reading_service.remove_book_tracking(user.id, book.id)
+        return {
+            "elements": [
+                ui.text(f"I've removed **'{book.title}'** from your tracking list.", style="success"),
+                ui.action_buttons([
+                    ui.button("Show Progress", "show_progress", "secondary"),
+                    ui.button("Search Books", "search_books", "secondary"),
+                ]),
+            ],
+            "suggestions": ["Show progress", "Search books"],
+            "metadata_updates": {},
+        }
+
+    if not pages and percentage is None:
+        return {
+            "elements": [ui.text("How many pages? Try: **I read 50 pages** or **I'm at 25%**", style="warning")],
+            "suggestions": ["Help"],
+            "metadata_updates": {},
+        }
+
+    # convert percentage to page number if needed
+    if percentage is not None and not pages:
+        total_pages = book.page_count or 0
+        if total_pages == 0:
+            return {
+                "elements": [ui.text(f"I don't have the total page count for **'{book.title}'**. Please use page numbers instead.", style="warning")],
+                "suggestions": ["Help"],
+                "metadata_updates": {},
+            }
+        pages = int((percentage / 100) * total_pages)
+
+    session_date = _parse_date(date_str)
+
+    try:
+        if action == "add":
+            await reading_service.add_reading_session(user.id, book.id, pages, session_date)
+            message = f"Logged **{pages} pages** of **'{book.title}'**."
+        elif action == "reduce":
+            result = await reading_service.reduce_reading_progress(user.id, book.id, pages, session_date)
+            pages_reduced = result.get("pages_reduced", pages)
+            message = f"Reduced progress by **{pages_reduced} pages** for **'{book.title}'**."
+        elif action == "set":
+            await reading_service.set_reading_progress(user.id, book.id, pages, session_date)
+            message = f"Set progress to **page {pages}** for **'{book.title}'**."
+        else:
+            return {"elements": [ui.text(f"Unknown action: {action}", style="error")], "suggestions": ["Help"], "metadata_updates": {}}
+    except ReadingLimitError as e:
+        return {"elements": [ui.text(e.message, style="warning")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
+    except ValueError as e:
+        return {"elements": [ui.text(f"Couldn't update progress: {e}", style="error")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
+
+    progress = await reading_service.get_book_progress(user.id, book.id)
+    elements = [ui.text(message, style="success")]
+    if progress:
+        elements.append(ui.book_progress_card(progress.model_dump(mode="json")))
+    elements.append(ui.action_buttons([
+        ui.button("Log More Pages", "log_reading", "primary", {"book_title": book.title}),
+        ui.button("Show All Progress", "show_progress", "secondary"),
+    ]))
+
+    return {
+        "elements": elements,
+        "suggestions": ["Log more pages", "Show progress", "Search books"],
+        "metadata_updates": {"last_book_title": book.title},
+    }
+
+
+async def execute_search_books(args: dict, context: dict) -> dict:
+    query = args.get("query", "")
+    search_by = args.get("search_by")
+    conn = context.get("conn")
+
+    if not query:
+        return {"elements": [ui.text("Please provide a search term.", style="warning")], "suggestions": ["Help"], "metadata_updates": {}}
+
+    book_service = get_book_service(conn)
+    books = await book_service.search_client.search_books(query, search_by)
+
+    if not books:
+        return {"elements": [ui.text(f"No books found matching '{query}'. Try a different search term.", style="info")], "suggestions": ["Search for another book", "Help"], "metadata_updates": {}}
+
+    header = f"Books by **{query}**:" if search_by == "author" else f"Books matching **'{query}'**:"
+    elements = [ui.text(header)]
+    elements.append(ui.book_list([book.model_dump(mode="json") for book in books]))
+    elements.append(ui.text("Say **track <book title>** to start tracking any of these books."))
+
+    return {"elements": elements, "suggestions": ["Track a book", "Search another", "Show my progress"], "metadata_updates": {}}
+
+
+async def execute_show_progress(args: dict, context: dict) -> dict:
+    book_title = args.get("book_title")
+    filter_type = args.get("filter")
+    conn = context.get("conn")
+    user = context.get("user")
+    reading_service = get_reading_service(conn)
+
+    # single-book progress
+    if book_title:
+        book, err = await _resolve_book(book_title, conn)
+        if err:
+            return err
+
+        progress = await reading_service.get_book_progress(user.id, book.id)
+        if not progress:
+            return {
+                "elements": [
+                    ui.text(f"You haven't started reading **'{book_title}'** yet.", style="info"),
+                    ui.action_buttons([ui.button("Start Tracking", "start_tracking", "primary", {"book_title": book.title})]),
+                ],
+                "suggestions": ["Start tracking", "Show all progress"],
+                "metadata_updates": {},
+            }
+
+        elements = ui.single_book_progress(f"Your progress on **'{book.title}'**:", progress.model_dump(mode="json"))
+        elements.append(ui.action_buttons([
+            ui.button("Log Pages", "log_reading", "primary", {"book_title": book.title}),
+            ui.button("Show All Progress", "show_progress", "secondary"),
+        ]))
+        return {
+            "elements": elements,
+            "suggestions": ["Log pages", "Show all progress", "Search books"],
+            "metadata_updates": {"last_book_title": book.title},
+        }
+
+    # all-books progress (with optional filter handled by service layer now)
+    all_progress = await reading_service.get_all_progress(user.id, filter_by=filter_type)
+
+    if not all_progress and filter_type:
+        labels = {"completed": "completed", "in_progress": "currently reading", "not_started": "not started"}
+        return {
+            "elements": [
+                ui.text(f"No books matching filter: **{labels.get(filter_type, filter_type)}**.", style="info"),
+                ui.action_buttons([
+                    ui.button("Show All Progress", "show_progress", "secondary"),
+                    ui.button("Search Books", "search_books", "secondary"),
+                ]),
+            ],
+            "suggestions": ["Show all progress", "Search books"],
+            "metadata_updates": {},
+        }
+
+    if not all_progress:
+        return {
+            "elements": [
+                ui.text("You haven't tracked any reading yet!", style="info"),
+                ui.action_buttons([ui.button("Search for a Book", "search_books", "primary")]),
+            ],
+            "suggestions": ["Search books", "Help"],
+            "metadata_updates": {},
+        }
+
+    headers = {
+        "completed": "Books you've **completed**:",
+        "in_progress": "Books you're **currently reading**:",
+        "not_started": "Books you've tracked but **not started**:",
+    }
+    header = headers.get(filter_type, "Your reading progress:")
+
+    elements = [ui.text(header)]
+    elements.append(ui.book_list([p.model_dump(mode="json") for p in all_progress]))
+    elements.append(ui.action_buttons([
+        ui.button("Completed Books", "show_progress", "secondary", {"filter": "completed"}),
+        ui.button("In Progress", "show_progress", "secondary", {"filter": "in_progress"}),
+        ui.button("Search Books", "search_books", "secondary"),
+    ]))
+    return {"elements": elements, "suggestions": ["Log pages", "Search books", "Help"], "metadata_updates": {}}
+
+
+async def execute_start_tracking(args: dict, context: dict) -> dict:
+    book_title = args.get("book_title", "")
+    conn = context.get("conn")
+    user = context.get("user")
+
+    book, err = await _resolve_book(book_title, conn)
+    if err:
+        return err
+
+    reading_service = get_reading_service(conn)
+    existing_progress = await reading_service.get_book_progress(user.id, book.id)
+
+    if existing_progress:
+        return {
+            "elements": ui.single_book_progress(f"You're already tracking **'{book.title}'**!", existing_progress.model_dump(mode="json")),
+            "suggestions": ["Log pages", "Show all progress", "Search books"],
+            "metadata_updates": {"last_book_title": book.title},
+        }
+
+    await reading_service.add_reading_session(user.id, book.id, 0, None)
+    progress = await reading_service.get_book_progress(user.id, book.id)
+    elements = [ui.text(f"Great! I've added **'{book.title}'** to your reading list. Start logging your pages whenever you're ready!", style="success")]
+    if progress:
+        elements.append(ui.book_progress_card(progress.model_dump(mode="json")))
+    elements.append(ui.action_buttons([
+        ui.button("Log Pages", "log_reading", "primary", {"book_title": book.title}),
+        ui.button("Show All Progress", "show_progress", "secondary"),
+    ]))
+    return {
+        "elements": elements,
+        "suggestions": ["Log pages", "Show progress", "Search books"],
+        "metadata_updates": {"last_book_title": book.title},
+    }
+
+
+_TOOL_DISPATCH = {
+    "log_reading": execute_log_reading,
+    "search_books": execute_search_books,
+    "show_progress": execute_show_progress,
+    "start_tracking": execute_start_tracking,
+}
+
+
+async def execute_tool(tool_name: str, args: dict, context: dict) -> dict:
+    handler = _TOOL_DISPATCH.get(tool_name)
+    if not handler:
+        logger.warning("Unknown tool requested: %s", tool_name)
+        return {
+            "elements": [ui.text(f"Unknown tool: {tool_name}", style="error")],
+            "suggestions": ["Help"],
+            "metadata_updates": {},
+        }
+    logger.info("Executing tool: %s", tool_name)
+    return await handler(args, context)

@@ -1,0 +1,42 @@
+services:
+  postgres-db:
+    image: postgres:15-alpine
+    container_name: readledger-postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: readledger
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    networks:
+      - readledger-network
+
+  readledger-backend:
+    build: ./backend
+    container_name: readledger-backend
+    ports:
+      - "8000:8000"
+    networks:
+      - readledger-network
+    volumes:
+      - ./backend:/app
+
+  readledger-frontend:
+    build: ./frontend
+    container_name: readledger-frontend
+    ports:
+      - "5173:5173"
+    networks:
+      - readledger-network
+    depends_on:
+      - readledger-backend
+
+networks:
+  readledger-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
