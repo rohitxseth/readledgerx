@@ -4,7 +4,7 @@
 
 ---
 
-![ReadLedger demo](docs/readledger-demo.gif)
+![ReadLedger demo](docs/demo.gif)
 
 ---
 
