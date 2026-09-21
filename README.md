@@ -88,12 +88,13 @@ so this works with no further changes. Interactive API docs: <http://localhost:8
 
 ```bash
 cd backend
-uv run pytest            # 56 tests, ~2s, no database and no network required
+uv run pytest            # ~200 tests, ~3s, no database, network or LLM required
 ```
 
-Every test is a unit test. Repositories and the Google Books client are swapped for
-in-memory fakes that satisfy the same `typing.Protocol` interfaces as the real
-implementations — which is the practical payoff of the design below.
+Repositories and the Google Books client are swapped for in-memory fakes that satisfy
+the same `typing.Protocol` interfaces as the real implementations — which is the
+practical payoff of the design below. The REST routes are exercised in-process through
+FastAPI with those same fakes.
 
 ## Architecture
 
@@ -129,6 +130,54 @@ flowchart TD
 Because `services/` only ever names a Protocol, a test can hand `BookService` an
 in-memory dict instead of a database and the service cannot tell the difference.
 
+### Two adapters, one service layer
+
+The chat agent is not where the app's logic lives. It is one of two **adapters** over
+the same domain services — the other is a conventional REST API — and neither contains
+business rules. An adapter parses its input, calls a service, and renders the result;
+the LLM's only job is to pick which service call a sentence means.
+
+```mermaid
+flowchart LR
+    U1(["Chat user"]) --> Agent
+    U2(["HTTP client"]) --> REST
+
+    subgraph Adapters["Adapters — parse, call, render"]
+        direction TB
+        Agent["<b>Chat agent</b><br/>LLM picks a tool<br/>renders BDUI"]
+        REST["<b>REST API</b><br/>client picks a route<br/>returns JSON"]
+    end
+
+    subgraph Services["Domain services — every rule lives here"]
+        direction TB
+        BS["<b>BookService</b><br/>search · resolve"]
+        RS["<b>ReadingService</b><br/>start_tracking · log_reading<br/>undo_last_log · get_all_progress"]
+    end
+
+    Agent --> BS
+    Agent --> RS
+    REST --> BS
+    REST --> RS
+    BS --> Repos[("Repositories<br/>behind Protocols")]
+    RS --> Repos
+
+    style Services fill:#2d3748,stroke:#4fd1c5,stroke-width:2px,color:#fff
+```
+
+| Operation | REST | Agent tool | Service call |
+|-----------|------|------------|--------------|
+| Search | `GET /books/search?q=` | `search_books` | `BookService.search` |
+| Track a book | `POST /books/track` | `start_tracking` | `BookService.resolve` → `ReadingService.start_tracking` |
+| Log pages | `POST /reading/log` | `log_reading` | `BookService.resolve` → `ReadingService.log_reading` |
+| Undo last entry | `DELETE /reading/last` | `undo_last_log` | `ReadingService.undo_last_log` |
+| Progress | `GET /progress` | `show_progress` | `ReadingService.get_all_progress` |
+
+Because the rules have one home, a rule violation reads the same through both doors:
+logging 500 pages of a 412-page book is a `400` with *"'Dune' only has 412 pages left…"*
+over HTTP, and that exact sentence in chat. `tests/test_adapter_equivalence.py` runs every
+operation through both adapters against identical in-memory fakes and asserts they call
+the same service method, leave the same state, and return the same result.
+
 ### One chat turn, end to end
 
 ```mermaid
@@ -151,7 +200,7 @@ sequenceDiagram
     CS->>DB: fetch last 30 turns
     CS->>RA: run(user_input, history)
 
-    RA->>LLM: stream, with 4 tool schemas bound
+    RA->>LLM: stream, with 5 tool schemas bound
     loop each token
         LLM-->>RA: chunk
         RA-->>U: {type:"text_chunk"}
@@ -312,7 +361,15 @@ as what it buys.
 | `/chat/message` | POST | Single-turn chat, non-streaming |
 | `/chat/sessions` | GET | List chat sessions |
 | `/chat/history` | GET | Message history for a session |
+| `/books/search?q=` | GET | Search the catalogue (`search_by=title\|author` optional) |
+| `/books/track` | POST | Start tracking — `title` or `google_volume_id`, optional `pages` |
+| `/reading/log` | POST | Log progress — `action` add\|set\|reduce\|remove, `pages` or `percentage` |
+| `/reading/last` | DELETE | Undo the most recent reading entry |
+| `/progress` | GET | Progress — optional `filter`, `sort_by`, `limit` |
 | `/health` | GET | Liveness + DB reachability |
+
+Every endpoint except `/auth/*` and `/health` requires `Authorization: Bearer <JWT>`.
+Interactive docs for all of them are at `/docs`.
 
 ## Design decisions
 
@@ -325,6 +382,7 @@ trade-offs and what would change at production scale.
 | [Composition root](./DESIGN.md#composition-root) | One file knows concrete classes; everything else sees interfaces |
 | [Event-sourced progress](./DESIGN.md#8-event-sourced-reading-progress) | Progress is derived, so it cannot drift from its own history |
 | [Backend-driven UI](./DESIGN.md#7-backend-driven-ui-bdui) | New chat widgets ship as a backend change plus one renderer case |
+| [Agent as an adapter](./DESIGN.md#10-the-agent-is-a-routing-layer) | Rules live in services, so the chat agent and REST API can't disagree |
 | [Six-stage resolution](./DESIGN.md#9-the-book-resolution-pipeline) | LLM calls only where deterministic matching has already failed |
 | [Domain mappers](./DESIGN.md#2-domain-mappers) | DB column renames stay contained to one file |
 | [Value objects](./DESIGN.md#3-value-objects) | Invalid page counts and emails fail at construction, not at the DB |

@@ -100,3 +100,13 @@ class IReadingRepository(Protocol):
     ) -> int:
         """Delete all sessions for a book, effectively stopping tracking."""
         ...
+
+    async def delete_latest_session(
+        self, user_id: uuid_module.UUID
+    ) -> ReadingSession | None:
+        """Delete the user's most recently logged session and return it.
+
+        "Most recent" is by when it was logged (created_at), not by read_on,
+        so undoing a backdated entry removes that entry. None if there is none.
+        """
+        ...

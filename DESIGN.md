@@ -231,7 +231,7 @@ The chat interface is backed by an LLM agent that uses tool-calling to map user 
 onto backend operations. Per message:
 
 1. Build message history (system prompt + last 20 turns)
-2. Stream from the LLM with four tool schemas bound
+2. Stream from the LLM with five tool schemas bound
 3. If the LLM returns a tool call → execute it, return structured BDUI elements
 4. If the LLM returns text → wrap it as a text element
 
@@ -393,7 +393,10 @@ there is nothing for it to disagree with.
 
 Three things follow from it that are worth having:
 
-- **Undo is natural.** *"I meant 20, not 40"* walks the sessions backwards from the most
+- **Undo is one row.** `undo_last_log` deletes the newest session — the log's last event —
+  whichever book it was for. That is exact for anything appended, and only for that:
+  see the next bullet.
+- **Corrections are natural.** *"I meant 20, not 40"* walks the sessions backwards from the most
   recent and trims them. With a stored counter it is arithmetic on a number nobody can
   audit; here it is an operation on the records that produced it.
 - **History is free.** Reading streaks, pages-per-week, "what was I reading in March" are
@@ -520,6 +523,83 @@ near-duplicate rows for every spelling variation.
 
 ---
 
+## 10. The Agent Is a Routing Layer
+
+**Files:** `app/chat/tools.py`, `app/routers/books.py`, `app/routers/reading.py`,
+`app/services/`, `tests/test_adapter_equivalence.py`
+
+The chat agent translates sentences into service calls. It decides *which* operation a
+message means; it does not decide *what that operation does*. Every rule — how a
+percentage becomes a page count, what "already tracking" means, which entry "undo"
+removes, whether 500 pages fits in a 412-page book — belongs to the services.
+
+The REST API exists to prove that. It is a second adapter over the same services, and
+its routes are one or two lines each: resolve the book, call the operation, return the
+result. If a route ever needs an `if`, a rule has leaked out of the service layer.
+
+### Why this needed a second adapter to hold
+
+When the agent was the only caller, "tools contain no business logic" was a convention
+with nothing enforcing it, and it had quietly eroded. An audit before adding REST found
+eight rules living in `tools.py` or in the model itself:
+
+- percentage-to-pages conversion, and the "unknown page count" rule
+- "pages or a percentage is required" — checked as `if not pages`, so **setting progress
+  to page 0 was impossible**
+- which service method each of add / set / reduce / remove maps to
+- what tracking means: a zero-page entry, idempotent, and never silently dropping pages
+- precedence between a clicked volume id and a typed title — with no domain operation at
+  all for "resolve this exact volume", which a stateless REST client needs
+- search, which the tool reached by going *through* `BookService` to its client, because
+  the service had no search operation
+- translating repository `ValueError`s into messages — which over HTTP would have been
+  `500`s
+- **undo, which didn't exist.** *"Undo that"* worked by the model recalling the last
+  amount and book from chat history and issuing a `reduce`. The business logic was
+  running inside the LLM.
+
+Each became a service operation. A boundary with a single client is only a convention;
+a second client is what makes it a contract.
+
+### One rule, one message, two renderings
+
+Services raise domain exceptions — `BusinessLogicError`, `EntityNotFoundError`,
+`BookResolutionError` — never `ValueError`. The REST layer maps them to `400` / `404` /
+`502` in one place (`main.py`); the agent renders the same message as chat text. So a
+violated rule produces the same sentence through both doors, and the equivalence tests
+assert exactly that, string for string.
+
+Result types are shared too. `start_tracking` returns a `TrackingResult`, which REST
+serialises as the response body and the agent renders as a card — the progress JSON
+inside the agent's card is byte-for-byte the JSON the REST route returns.
+
+### What deliberately stays in the agent
+
+Anything that exists because the input is a conversation stays in the conversational
+adapter:
+
+- natural-language dates (*"yesterday"*); REST takes an ISO date instead
+- the search results remembered in session metadata, and the volume ids in button
+  payloads — conversation state a stateless client doesn't have
+- the filler-query guard and the recommendation intercept, which defend against the
+  *model* inventing queries rather than enforcing a rule about searching
+- headers, cards, suggestions — presentation
+
+The test for where something belongs: would a REST client need the same behaviour? If
+yes, it's a rule and goes in a service. If it only makes sense because a model or a
+chat transcript is involved, it stays in the adapter.
+
+### How it's enforced
+
+`tests/test_adapter_equivalence.py` runs each operation once through a REST route and
+once through the corresponding tool, each against a fresh, identical set of in-memory
+fakes. A thin spy around each service records which operations the *adapter* invoked —
+calls a service makes to itself go through `self` and stay invisible, which is exactly
+the boundary under test. The tests then assert the same calls, the same resulting
+state, and the same result or error message.
+
+---
+
 ## Composition Root
 
 **File:** `app/core/dependencies.py`
@@ -584,3 +664,4 @@ or a revocation list.
 | Backend-Driven UI | `chat/ui.py` + `BduiRenderer.jsx` |
 | Event sourcing (derived state) | `reading_sessions` → `BookProgress` |
 | Layered resolution w/ LLM fallback | `services/book_service.py` |
+| Ports & adapters (agent + REST) | `chat/tools.py`, `routers/` → `services/` |

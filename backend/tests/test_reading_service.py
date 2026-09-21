@@ -267,3 +267,101 @@ async def test_last_read_still_prefers_a_newer_day_over_a_later_session():
 
     top = await svc.get_all_progress(user, sort_by="last_read", limit=1)
     assert top[0].book_id == today_book
+
+
+# ---------------------------------------------------------------------------
+# Operations moved out of the chat tool layer
+# ---------------------------------------------------------------------------
+
+from app.core.exceptions import BusinessLogicError, EntityNotFoundError  # noqa: E402
+
+
+def _service_with(book):
+    repo = FakeReadingRepository(page_counts={book.id: book.page_count}, titles={book.id: book.title})
+    return _make_service(reading_repo=repo, book_repo=FakeBookRepository(books=[book])), repo
+
+
+async def test_set_progress_to_page_zero_is_allowed():
+    """The old tool checked `if not pages`, so 0 read as "missing" and a reset
+    to the start was impossible. set 0 is a real target."""
+    book = make_book(title="Dune", page_count=412)
+    svc, _ = _service_with(book)
+    user = uuid.uuid4()
+
+    result = await svc.log_reading(user, book.id, action="set", pages=0)
+    assert result.pages == 0
+
+
+@pytest.mark.parametrize("action", ["add", "reduce"])
+async def test_zero_pages_is_rejected_where_it_would_record_nothing(action):
+    book = make_book(title="Dune", page_count=412)
+    svc, _ = _service_with(book)
+
+    with pytest.raises(BusinessLogicError, match="greater than zero"):
+        await svc.log_reading(uuid.uuid4(), book.id, action=action, pages=0)
+
+
+async def test_percentage_needs_a_known_page_count():
+    book = make_book(title="Mystery", page_count=0)
+    svc, _ = _service_with(book)
+
+    with pytest.raises(BusinessLogicError, match="page count for 'Mystery' is unknown"):
+        await svc.log_reading(uuid.uuid4(), book.id, percentage=50)
+
+
+async def test_pages_win_when_both_pages_and_percentage_are_given():
+    book = make_book(title="Dune", page_count=412)
+    svc, _ = _service_with(book)
+
+    result = await svc.log_reading(uuid.uuid4(), book.id, pages=10, percentage=50)
+    assert result.pages == 10
+
+
+async def test_remove_untracks_the_book():
+    book = make_book(title="Dune", page_count=412)
+    svc, repo = _service_with(book)
+    user = uuid.uuid4()
+    await svc.log_reading(user, book.id, pages=40)
+
+    result = await svc.log_reading(user, book.id, action="remove")
+
+    assert result.sessions_removed == 1 and result.progress is None
+    assert repo._sessions == []
+
+
+async def test_unknown_action_is_a_domain_error_not_a_crash():
+    book = make_book(title="Dune", page_count=412)
+    svc, _ = _service_with(book)
+
+    with pytest.raises(BusinessLogicError, match="Unknown action"):
+        await svc.log_reading(uuid.uuid4(), book.id, action="teleport", pages=5)
+
+
+async def test_start_tracking_an_already_tracked_book_with_pages_logs_them():
+    book = make_book(title="Dune", page_count=412)
+    svc, repo = _service_with(book)
+    user = uuid.uuid4()
+    await svc.start_tracking(user, book.id)
+
+    result = await svc.start_tracking(user, book.id, pages=30)
+
+    assert result.created is False and result.pages_logged == 30
+    assert result.progress.pages_read == 30
+
+
+async def test_undoing_a_tracking_entry_untracks_the_book():
+    """A 0-page session *is* the tracking; undoing it leaves nothing behind."""
+    book = make_book(title="Dune", page_count=412)
+    svc, _ = _service_with(book)
+    user = uuid.uuid4()
+    await svc.start_tracking(user, book.id)
+
+    result = await svc.undo_last_log(user)
+
+    assert result.session.pages_read == 0 and result.progress is None
+
+
+async def test_operations_on_an_unknown_book_raise_not_found():
+    svc = _make_service()
+    with pytest.raises(EntityNotFoundError):
+        await svc.log_reading(uuid.uuid4(), uuid.uuid4(), pages=5)

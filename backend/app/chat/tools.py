@@ -3,7 +3,10 @@ import re
 from datetime import datetime, timedelta, timezone
 from app.chat import ui
 from app.core.dependencies import get_book_service, get_reading_service
-from app.core.exceptions import ReadingLimitError, ExternalServiceError
+from typing import get_args
+
+from app.core.exceptions import BookResolutionError, DomainException, ExternalServiceError
+from app.schemas.models import LogAction, ProgressFilter, ProgressSort
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ LOG_READING_DEF = {
                 "book_title": {"type": "string", "description": "Title of the book."},
                 "action": {
                     "type": "string",
-                    "enum": ["add", "set", "reduce", "remove"],
+                    "enum": list(get_args(LogAction)),
                 },
                 "pages": {"type": "integer"},
                 "percentage": {"type": "number"},
@@ -73,12 +76,12 @@ SHOW_PROGRESS_DEF = {
                 },
                 "filter": {
                     "type": "string",
-                    "enum": ["completed", "in_progress", "not_started"],
+                    "enum": list(get_args(ProgressFilter)),
                     "description": "Restrict to books in this state. Combine with sort_by for e.g. closest to finishing.",
                 },
                 "sort_by": {
                     "type": "string",
-                    "enum": ["pages_read", "percent_complete", "last_read"],
+                    "enum": list(get_args(ProgressSort)),
                     "description": "Rank results highest-first by this measure.",
                 },
                 "limit": {
@@ -114,7 +117,26 @@ START_TRACKING_DEF = {
     },
 }
 
-TOOL_DEFINITIONS = [LOG_READING_DEF, SEARCH_BOOKS_DEF, SHOW_PROGRESS_DEF, START_TRACKING_DEF]
+UNDO_LAST_LOG_DEF = {
+    "type": "function",
+    "function": {
+        "name": "undo_last_log",
+        "description": (
+            "Undo the user's most recent reading entry, whichever book it was for. "
+            "Use for 'undo that', 'undo my last log', 'I didn't mean to log that'. "
+            "Takes no arguments — the backend knows which entry was last, so do "
+            "not work out an amount and call log_reading with reduce instead. "
+            "Always call it for an undo request, even if the conversation suggests "
+            "nothing is left: entries can be logged in other chats or through the "
+            "API, and only the backend knows."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+TOOL_DEFINITIONS = [
+    LOG_READING_DEF, SEARCH_BOOKS_DEF, SHOW_PROGRESS_DEF, START_TRACKING_DEF, UNDO_LAST_LOG_DEF,
+]
 
 
 # Words with no searchable meaning on their own. A query made only of these is
@@ -135,8 +157,13 @@ _NON_SPECIFIC_TERMS = frozenset({
 
 
 def _is_non_specific_query(query: str) -> bool:
-    """True when *query* names nothing: every word is filler."""
-    return all(t in _NON_SPECIFIC_TERMS for t in re.findall(r"[\w'-]+", query.lower()))
+    """True when *query* has words and every one of them is filler.
+
+    A query with no words at all isn't filler, it's empty — and rejecting an
+    empty search is the service's rule, not this guard's.
+    """
+    words = re.findall(r"[\w'-]+", (query or "").lower())
+    return bool(words) and all(w in _NON_SPECIFIC_TERMS for w in words)
 
 
 # How many shown results to remember for the next turn.
@@ -205,29 +232,25 @@ async def _resolve_book(title: str, conn, context: dict | None = None, args: dic
     resolution pipeline, which may otherwise pick a different edition.
 
     Returns (book, None) on success, (None, error_dict) on failure."""
-    if not title:
+    volume_id = _preferred_volume_id(args)
+    if not title and not volume_id:
         return None, {
             "elements": [ui.text("Which book? Try: **I read 50 pages of Harry Potter**", style="warning")],
             "suggestions": ["Show my progress", "Help"],
             "metadata_updates": {},
         }
 
-    recent = _recent_results(context)
-    volume_id = _preferred_volume_id(args)
-    if volume_id:
-        # An id carried by a clicked button outranks anything matched by title.
-        recent = [{"google_books_id": volume_id, "title": title}, *recent]
-
     try:
-        book_service = get_book_service(conn)
-        book = await book_service.resolve_book(title, recent_results=recent)
+        book = await get_book_service(conn).resolve(
+            title, volume_id=volume_id, recent_results=_recent_results(context)
+        )
     except ExternalServiceError as e:
         return None, {
             "elements": [ui.text(f"Search failed: {e.message}", style="error")],
             "suggestions": ["Try again", "Help"],
             "metadata_updates": {},
         }
-    if not book:
+    except BookResolutionError:
         return None, {
             "elements": [
                 ui.text(f"I couldn't find a book matching **'{title}'**.", style="warning"),
@@ -240,22 +263,26 @@ async def _resolve_book(title: str, conn, context: dict | None = None, args: dic
 
 
 async def execute_log_reading(args: dict, context: dict) -> dict:
-    book_title = args.get("book_title", "")
-    action = args.get("action", "add")
-    pages = args.get("pages")
-    percentage = args.get("percentage")
-    date_str = args.get("date")
-    conn = context.get("conn")
     user = context.get("user")
+    conn = context.get("conn")
 
-    book, err = await _resolve_book(book_title, conn, context, args)
+    book, err = await _resolve_book(args.get("book_title", ""), conn, context, args)
     if err:
         return err
 
-    reading_service = get_reading_service(conn)
+    try:
+        result = await get_reading_service(conn).log_reading(
+            user.id,
+            book.id,
+            action=args.get("action", "add"),
+            pages=args.get("pages"),
+            percentage=args.get("percentage"),
+            session_date=_parse_date(args.get("date")),
+        )
+    except DomainException as e:
+        return {"elements": [ui.text(e.message, style="warning")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
 
-    if action == "remove":
-        await reading_service.remove_book_tracking(user.id, book.id)
+    if result.action == "remove":
         return {
             "elements": [
                 ui.text(f"I've removed **'{book.title}'** from your tracking list.", style="success"),
@@ -268,48 +295,15 @@ async def execute_log_reading(args: dict, context: dict) -> dict:
             "metadata_updates": {},
         }
 
-    if not pages and percentage is None:
-        return {
-            "elements": [ui.text("How many pages? Try: **I read 50 pages** or **I'm at 25%**", style="warning")],
-            "suggestions": ["Help"],
-            "metadata_updates": {},
-        }
+    message = {
+        "add": f"Logged **{result.pages} pages** of **'{book.title}'**.",
+        "reduce": f"Reduced progress by **{result.pages_reduced} pages** for **'{book.title}'**.",
+        "set": f"Set progress to **page {result.pages}** for **'{book.title}'**.",
+    }[result.action]
 
-    # convert percentage to page number if needed
-    if percentage is not None and not pages:
-        total_pages = book.page_count or 0
-        if total_pages == 0:
-            return {
-                "elements": [ui.text(f"I don't have the total page count for **'{book.title}'**. Please use page numbers instead.", style="warning")],
-                "suggestions": ["Help"],
-                "metadata_updates": {},
-            }
-        pages = int((percentage / 100) * total_pages)
-
-    session_date = _parse_date(date_str)
-
-    try:
-        if action == "add":
-            await reading_service.add_reading_session(user.id, book.id, pages, session_date)
-            message = f"Logged **{pages} pages** of **'{book.title}'**."
-        elif action == "reduce":
-            result = await reading_service.reduce_reading_progress(user.id, book.id, pages, session_date)
-            pages_reduced = result.get("pages_reduced", pages)
-            message = f"Reduced progress by **{pages_reduced} pages** for **'{book.title}'**."
-        elif action == "set":
-            await reading_service.set_reading_progress(user.id, book.id, pages, session_date)
-            message = f"Set progress to **page {pages}** for **'{book.title}'**."
-        else:
-            return {"elements": [ui.text(f"Unknown action: {action}", style="error")], "suggestions": ["Help"], "metadata_updates": {}}
-    except ReadingLimitError as e:
-        return {"elements": [ui.text(e.message, style="warning")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
-    except ValueError as e:
-        return {"elements": [ui.text(f"Couldn't update progress: {e}", style="error")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
-
-    progress = await reading_service.get_book_progress(user.id, book.id)
     elements = [ui.text(message, style="success")]
-    if progress:
-        elements.append(ui.book_progress_card(progress.model_dump(mode="json")))
+    if result.progress:
+        elements.append(ui.book_progress_card(result.progress.model_dump(mode="json")))
     elements.append(ui.action_buttons([
         ui.button("Log More Pages", "log_reading", "primary", _book_ref(book)),
         ui.button("Show All Progress", "show_progress", "secondary"),
@@ -327,11 +321,9 @@ async def execute_search_books(args: dict, context: dict) -> dict:
     search_by = args.get("search_by")
     conn = context.get("conn")
 
-    if not query:
-        return {"elements": [ui.text("Please provide a search term.", style="warning")], "suggestions": ["Help"], "metadata_updates": {}}
-
-    # Backstop for recommendation requests the router's intercept didn't catch.
-    # Searching Google Books for "recommended" returns medical guidelines.
+    # Agent-only backstop for recommendation requests the router's intercept
+    # didn't catch: it defends against the model inventing a filler query, so
+    # it belongs to this adapter, not to the search operation itself.
     if _is_non_specific_query(query):
         logger.info("search_books: declined non-specific query %r", query)
         return {
@@ -340,8 +332,12 @@ async def execute_search_books(args: dict, context: dict) -> dict:
             "metadata_updates": {},
         }
 
-    book_service = get_book_service(conn)
-    books = await book_service.search_client.search_books(query, search_by)
+    try:
+        books = await get_book_service(conn).search(query, search_by=search_by)
+    except ExternalServiceError as e:
+        return {"elements": [ui.text(f"Search failed: {e.message}", style="error")], "suggestions": ["Try again", "Help"], "metadata_updates": {}}
+    except DomainException as e:
+        return {"elements": [ui.text(e.message, style="warning")], "suggestions": ["Help"], "metadata_updates": {}}
 
     if not books:
         return {"elements": [ui.text(f"No books found matching '{query}'. Try a different search term.", style="info")], "suggestions": ["Search for another book", "Help"], "metadata_updates": {}}
@@ -466,43 +462,38 @@ async def execute_show_progress(args: dict, context: dict) -> dict:
 
 
 async def execute_start_tracking(args: dict, context: dict) -> dict:
-    book_title = args.get("book_title", "")
-    # The model sometimes routes "I read 300 pages of X" here when X isn't
-    # tracked yet. Honour the pages instead of silently starting from zero.
-    pages = args.get("pages") or 0
-    conn = context.get("conn")
     user = context.get("user")
+    conn = context.get("conn")
 
-    book, err = await _resolve_book(book_title, conn, context, args)
+    book, err = await _resolve_book(args.get("book_title", ""), conn, context, args)
     if err:
         return err
 
-    reading_service = get_reading_service(conn)
-    existing_progress = await reading_service.get_book_progress(user.id, book.id)
+    try:
+        # The model sometimes routes "I read 300 pages of X" here; the service
+        # logs those pages instead of dropping them.
+        result = await get_reading_service(conn).start_tracking(
+            user.id, book.id, pages=args.get("pages") or 0
+        )
+    except DomainException as e:
+        return {"elements": [ui.text(e.message, style="warning")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
 
-    if existing_progress:
-        if pages > 0:
-            # Already tracked and pages were given — that's a log, not a start.
-            return await execute_log_reading({**args, "action": "add"}, context)
+    progress = result.progress.model_dump(mode="json")
+    if not result.created and not result.pages_logged:
         return {
-            "elements": ui.single_book_progress(f"You're already tracking **'{book.title}'**!", existing_progress.model_dump(mode="json")),
+            "elements": ui.single_book_progress(f"You're already tracking **'{book.title}'**!", progress),
             "suggestions": ["Log pages", "Show all progress", "Search books"],
             "metadata_updates": {"last_book_title": book.title},
         }
 
-    try:
-        await reading_service.add_reading_session(user.id, book.id, pages, None)
-    except ReadingLimitError as e:
-        return {"elements": [ui.text(e.message, style="warning")], "suggestions": ["Show progress", "Help"], "metadata_updates": {}}
-
-    progress = await reading_service.get_book_progress(user.id, book.id)
-    if pages > 0:
-        opening = f"Added **'{book.title}'** to your reading list and logged **{pages} pages**."
-    else:
+    if result.created and result.pages_logged:
+        opening = f"Added **'{book.title}'** to your reading list and logged **{result.pages_logged} pages**."
+    elif result.created:
         opening = f"Great! I've added **'{book.title}'** to your reading list. Start logging your pages whenever you're ready!"
-    elements = [ui.text(opening, style="success")]
-    if progress:
-        elements.append(ui.book_progress_card(progress.model_dump(mode="json")))
+    else:
+        opening = f"Logged **{result.pages_logged} pages** of **'{book.title}'**."
+
+    elements = [ui.text(opening, style="success"), ui.book_progress_card(progress)]
     elements.append(ui.action_buttons([
         ui.button("Log Pages", "log_reading", "primary", _book_ref(book)),
         ui.button("Show All Progress", "show_progress", "secondary"),
@@ -514,11 +505,35 @@ async def execute_start_tracking(args: dict, context: dict) -> dict:
     }
 
 
+async def execute_undo_last_log(args: dict, context: dict) -> dict:
+    user = context.get("user")
+    try:
+        result = await get_reading_service(context.get("conn")).undo_last_log(user.id)
+    except DomainException as e:
+        return {"elements": [ui.text(e.message, style="info")], "suggestions": ["Show my progress", "Help"], "metadata_updates": {}}
+
+    title = result.book.title if result.book else "that book"
+    pages = result.session.pages_read
+    if pages:
+        message = f"Undid your last entry: **{pages} pages** of **'{title}'**."
+        if result.progress is None:
+            message += f" That was its only entry, so **'{title}'** is no longer tracked."
+    else:
+        message = f"Undid tracking **'{title}'**."
+
+    elements = [ui.text(message, style="success")]
+    if result.progress:
+        elements.append(ui.book_progress_card(result.progress.model_dump(mode="json")))
+    elements.append(ui.action_buttons([ui.button("Show All Progress", "show_progress", "secondary")]))
+    return {"elements": elements, "suggestions": ["Show progress", "Log pages", "Search books"], "metadata_updates": {}}
+
+
 _TOOL_DISPATCH = {
     "log_reading": execute_log_reading,
     "search_books": execute_search_books,
     "show_progress": execute_show_progress,
     "start_tracking": execute_start_tracking,
+    "undo_last_log": execute_undo_last_log,
 }
 
 

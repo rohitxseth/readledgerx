@@ -9,6 +9,7 @@ from app.interfaces.repository_interfaces import IBookRepository
 from app.interfaces.client_interfaces import IBookSearchClient
 from app.services.book_intelligence import BookIntelligenceService
 from app.schemas.models import Book
+from app.core.exceptions import BookResolutionError, BusinessLogicError
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,61 @@ class BookService:
         self.repo = repo
         self.search_client = search_client
         self.intelligence = intelligence
+
+    # ------------------------------------------------------------------
+    # Operations used by the adapters (chat agent and REST API)
+    # ------------------------------------------------------------------
+
+    async def search(
+        self, query: str, search_by: str | None = None, max_results: int = 10
+    ) -> list[Book]:
+        """Search the external catalogue. Results are not stored."""
+        if not (query or "").strip():
+            raise BusinessLogicError("Give something to search for.")
+        return await self.search_client.search_books(
+            query.strip(), search_by=search_by, max_results=max_results
+        )
+
+    async def resolve(
+        self,
+        title: str | None = None,
+        *,
+        volume_id: str | None = None,
+        recent_results: list[dict] | None = None,
+    ) -> Book:
+        """Resolve a reference to one stored Book, or raise BookResolutionError.
+
+        An explicit volume id is the strongest reference and wins outright —
+        it's what a REST client sends after a search, and what an agent's
+        button carries. A title goes through the resolution pipeline.
+        """
+        if volume_id:
+            book = await self.resolve_by_volume_id(volume_id)
+            if book:
+                return book
+            if not title:
+                raise BookResolutionError(f"No book found with volume id '{volume_id}'.")
+        if title:
+            book = await self.resolve_book(title, recent_results=recent_results)
+            if book:
+                return book
+            raise BookResolutionError(f"Couldn't find a book matching '{title}'.")
+        raise BookResolutionError("Name a book by title or volume id.")
+
+    async def resolve_by_volume_id(self, volume_id: str) -> Book | None:
+        """The stored Book for an exact volume, fetching and storing it if new."""
+        existing = await self.repo.get_by_google_volume_id(volume_id)
+        if existing:
+            return existing
+        book = await self.search_client.get_volume(volume_id)
+        if book is None:
+            return None
+        logger.info("Storing book fetched by volume id: '%s' (%s)", book.title, volume_id)
+        return await self.repo.create(book)
+
+    # ------------------------------------------------------------------
+    # Resolution pipeline
+    # ------------------------------------------------------------------
 
     async def resolve_book(
         self,

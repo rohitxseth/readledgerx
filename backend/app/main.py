@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text as sa_text
 
-from app.routers import auth_router, chat_router
+from app.routers import auth_router, books_router, chat_router, progress_router, reading_router
 from app.config.logging_config import setup_logging
 from app.config.settings import settings
 from app.core.exceptions import (
@@ -68,6 +68,9 @@ async def external_service_handler(request: Request, exc: ExternalServiceError):
 
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(books_router)
+app.include_router(reading_router)
+app.include_router(progress_router)
 
 
 @app.get("/health")

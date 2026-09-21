@@ -230,3 +230,22 @@ class ReadingRepository:
         )
         result = await self.conn.execute(stmt)
         return result.rowcount
+
+    async def delete_latest_session(
+        self, user_id: uuid_module.UUID
+    ) -> ReadingSession | None:
+        latest = (
+            select(reading_sessions.c.id)
+            .where(reading_sessions.c.user_id == user_id)
+            .order_by(desc(reading_sessions.c.created_at), desc(reading_sessions.c.id))
+            .limit(1)
+            .scalar_subquery()
+        )
+        stmt = (
+            delete(reading_sessions)
+            .where(reading_sessions.c.id == latest)
+            .returning(reading_sessions)
+        )
+        result = await self.conn.execute(stmt)
+        row = result.first()
+        return ReadingSessionMapper.from_db(dict(row._mapping)) if row else None

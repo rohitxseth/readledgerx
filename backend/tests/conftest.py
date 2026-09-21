@@ -75,10 +75,16 @@ class FakeSearchClient:
     def __init__(self, results: list[Book] | None = None):
         self.results = results or []
         self.last_query = None
+        self.last_volume_id = None
 
     async def search_books(self, query: str, search_by=None, max_results=10) -> list[Book]:
         self.last_query = query
         return self.results
+
+    async def get_volume(self, volume_id: str) -> Book | None:
+        """Exact lookup against the same canned catalogue."""
+        self.last_volume_id = volume_id
+        return next((b for b in self.results if b.google_books_id == volume_id), None)
 
 
 class FakeReadingRepository:
@@ -149,6 +155,14 @@ class FakeReadingRepository:
 
     async def set_reading_progress(self, user_id, book_id, target_pages, session_date=None):
         return {"action": "set", "pages": target_pages}
+
+    async def delete_latest_session(self, user_id) -> ReadingSession | None:
+        owned = [s for s in self._sessions if s.user_id == user_id]
+        if not owned:
+            return None
+        latest = max(owned, key=lambda s: s.created_at)
+        self._sessions.remove(latest)
+        return latest
 
     async def remove_book_tracking(self, user_id, book_id) -> int:
         before = len(self._sessions)

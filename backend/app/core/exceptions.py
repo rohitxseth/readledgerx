@@ -18,7 +18,7 @@ class BusinessLogicError(DomainException):
     pass
 
 
-class BookResolutionError(DomainException):
+class BookResolutionError(EntityNotFoundError):
     """Could not resolve the book — title not found in DB or external APIs."""
     pass
 

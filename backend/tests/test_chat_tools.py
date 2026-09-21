@@ -219,3 +219,9 @@ async def test_genuine_searches_still_return_results(monkeypatch, query, search_
     book_lists = [el for el in result["elements"] if el["type"] == "book_list"]
     assert book_lists and book_lists[0]["books"][0]["title"] == "A Real Result"
     assert result["metadata_updates"]["recent_search_results"]
+
+
+@pytest.mark.parametrize("query", ["", "   ", "??"])
+def test_queries_without_words_are_not_treated_as_filler(query):
+    """Blank isn't a recommendation request; the service rejects it instead."""
+    assert not _is_non_specific_query(query)

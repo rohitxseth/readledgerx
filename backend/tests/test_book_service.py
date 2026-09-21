@@ -275,3 +275,61 @@ async def test_exact_match_beats_a_longer_remembered_title():
         "Dune", recent_results=[_as_shown(messiah), _as_shown(dune)]
     )
     assert result.google_books_id == "vol_dune"
+
+
+# ---------------------------------------------------------------------------
+# resolve() — the single entry point both adapters use
+# ---------------------------------------------------------------------------
+
+from app.core.exceptions import BookResolutionError, EntityNotFoundError  # noqa: E402
+
+
+async def test_resolve_prefers_an_explicit_volume_id_over_the_title():
+    """The id is the stronger reference: it names one edition exactly."""
+    wanted = make_book(title="The Fountainhead", google_books_id="vol_740", page_count=740)
+    other = make_book(title="The Fountainhead", google_books_id="vol_754", page_count=754)
+    search = FakeSearchClient(results=[other, wanted])
+
+    service = _make_service(search=search)
+    result = await service.resolve("The Fountainhead", volume_id="vol_740")
+
+    assert result.google_books_id == "vol_740"
+    assert search.last_query is None  # no title search happened
+
+
+async def test_resolve_by_volume_id_stores_a_fetched_volume_once():
+    wanted = make_book(title="Anthem", google_books_id="vol_anthem")
+    repo = FakeBookRepository()
+    service = _make_service(repo=repo, search=FakeSearchClient(results=[wanted]))
+
+    first = await service.resolve(volume_id="vol_anthem")
+    second = await service.resolve(volume_id="vol_anthem")
+
+    assert first.id == second.id and len(repo._books) == 1
+
+
+async def test_resolve_falls_back_to_the_title_when_the_volume_is_unknown():
+    found = make_book(title="Dune", google_books_id="vol_dune")
+    service = _make_service(search=FakeSearchClient(results=[found]))
+
+    result = await service.resolve("Dune", volume_id="vol_gone")
+    assert result.google_books_id == "vol_dune"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"title": "xyzzy nonsense"},
+    {"volume_id": "vol_gone"},
+    {},
+])
+async def test_resolve_raises_a_not_found_when_nothing_matches(kwargs):
+    service = _make_service(search=FakeSearchClient(results=[]))
+    with pytest.raises(BookResolutionError) as exc:
+        await service.resolve(**kwargs)
+    assert isinstance(exc.value, EntityNotFoundError)  # so REST maps it to 404
+
+
+async def test_search_rejects_a_blank_query_before_calling_the_client():
+    search = FakeSearchClient(results=[make_book()])
+    with pytest.raises(Exception, match="Give something to search for"):
+        await _make_service(search=search).search("   ")
+    assert search.last_query is None

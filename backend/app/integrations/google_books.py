@@ -41,11 +41,7 @@ class GoogleBooksClient:
                     volume_info = item.get("volumeInfo", {})
                     if volume_info.get("language") != "en":
                         continue
-
-                    book = BookMapper.from_google_books(item, uuid.uuid4())
-                    if book.page_count <= 0:
-                        book.page_count = self.DEFAULT_PAGE_COUNT
-                    books.append(book)
+                    books.append(self._to_book(item))
 
                 return books
 
@@ -59,3 +55,32 @@ class GoogleBooksClient:
             raise  # don't double-wrap
         except Exception as e:
             raise ExternalServiceError("Google Books", str(e))
+
+    async def get_volume(self, volume_id: str) -> Book | None:
+        """Fetch one volume by id. No language filter: the caller chose it."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                params = {"key": settings.google_books_api_key} if settings.google_books_api_key else {}
+                response = await client.get(f"{self.BASE_URL}/{volume_id}", params=params)
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
+                return self._to_book(response.json())
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise ExternalServiceError("Google Books", "Rate limit exceeded. Please try again later.")
+            raise ExternalServiceError("Google Books", f"HTTP {e.response.status_code}")
+        except httpx.TimeoutException:
+            raise ExternalServiceError("Google Books", "Request timed out")
+        except ExternalServiceError:
+            raise
+        except Exception as e:
+            raise ExternalServiceError("Google Books", str(e))
+
+    def _to_book(self, item: dict) -> Book:
+        # One normalisation for both paths, so a volume gets the same page count
+        # whether it arrived via search or via a direct lookup.
+        book = BookMapper.from_google_books(item, uuid.uuid4())
+        if book.page_count <= 0:
+            book.page_count = self.DEFAULT_PAGE_COUNT
+        return book

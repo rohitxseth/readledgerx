@@ -27,3 +27,11 @@ class IBookSearchClient(Protocol):
             A (possibly empty) list of :class:`~app.schemas.models.Book` objects.
         """
         ...
+
+    async def get_volume(self, volume_id: str) -> Book | None:
+        """Fetch one exact volume by its catalogue id, or None if it doesn't exist.
+
+        Needed to resolve a volume the caller already identified — a stateless
+        REST client can't rely on the chat session remembering search results.
+        """
+        ...

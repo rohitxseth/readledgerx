@@ -41,7 +41,8 @@ and view their reading progress — all via a conversational chat interface.
    - Actions:
      - ``add`` (default): Log pages read. Requires ``pages``.
      - ``set``: Set absolute progress. Requires ``pages`` or ``percentage``.
-     - ``reduce``: Reduce/undo pages. Requires ``pages``.
+     - ``reduce``: Take a number of pages off. Requires ``pages``. For "undo that",
+       use ``undo_last_log`` instead — don't work out an amount yourself.
      - ``remove``: Remove book from tracking entirely.
    - Optional: ``date`` (defaults to today).
 
@@ -55,6 +56,12 @@ and view their reading progress — all via a conversational chat interface.
      - "most read book" → ``sort_by=pages_read, limit=1``
      - "what did I read most recently" → ``sort_by=last_read, limit=1``
      - "closest to finishing" → ``sort_by=percent_complete, filter=in_progress, limit=1``
+
+5. **undo_last_log** — Undo the user's most recent reading entry.
+   - No arguments. The backend knows which entry was last and which book it was for.
+   - Use for "undo that", "undo my last log", "I didn't mean to log that".
+   - ALWAYS call it for an undo request. Never answer "nothing to undo" from the
+     conversation: entries may have been logged elsewhere, and only the backend knows.
 
 ### Action handling
 
