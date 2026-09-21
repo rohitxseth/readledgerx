@@ -10,14 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class EventBus:
-    """
-    Lightweight in-process async event bus.
-
-    Usage:
-        bus = EventBus()
-        bus.subscribe(UserRegisteredEvent, my_handler)
-        await bus.publish(UserRegisteredEvent(user_id="...", email="..."))
-    """
 
     def __init__(self) -> None:
         self._handlers: dict[type, list[Callable]] = defaultdict(list)
@@ -40,5 +32,4 @@ class EventBus:
                 )
 
 
-# Application-wide singleton
 event_bus = EventBus()

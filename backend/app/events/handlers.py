@@ -20,7 +20,6 @@ async def on_user_logged_in(event: UserLoggedInEvent) -> None:
 
 
 async def _write_audit_log(action: str, user_id: str, details: dict) -> None:
-    """Persist an audit entry. Best-effort — failures are logged, not raised."""
     try:
         import json
         async with async_engine.begin() as conn:
@@ -37,5 +36,4 @@ async def _write_audit_log(action: str, user_id: str, details: dict) -> None:
                 },
             )
     except Exception:
-        # audit is non-critical — don't blow up the request
         logger.warning("Failed to write audit log for %s", action, exc_info=True)

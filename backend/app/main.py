@@ -34,8 +34,6 @@ event_bus.subscribe(UserLoggedInEvent, on_user_logged_in)
 
 app = FastAPI(title="ReadLedger API")
 
-# In production, pin this to actual frontend origins instead of "*".
-# allow_credentials=True with allow_origins=["*"] is rejected by browsers anyway.
 _ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -84,7 +82,6 @@ app.include_router(progress_router)
 
 @app.get("/health")
 async def health():
-    """Checks that the API is up and the DB is reachable."""
     db_ok = False
     try:
         async with async_engine.connect() as conn:
