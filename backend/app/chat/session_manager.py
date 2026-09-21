@@ -1,8 +1,3 @@
-"""Session manager — chat session CRUD backed by SQLAlchemy Core.
-
-Manages conversation sessions and message persistence for the chat system.
-"""
-
 import json
 import logging
 from datetime import UTC, datetime
@@ -18,11 +13,6 @@ _ALLOWED_SESSION_COLUMNS = frozenset({"metadata", "message_count", "is_active", 
 
 
 def parse_metadata(raw) -> dict:
-    """Coerce a session's metadata column into a dict.
-
-    Metadata is written with json.dumps into a JSONB column, so it reads back
-    as a JSON *string* rather than an object. Accept either shape.
-    """
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):
@@ -156,7 +146,6 @@ async def add_message(
             message_id = str(row[0]) if row else ""
 
             if message_id:
-                # bump the message counter on the parent session
                 await conn.execute(
                     update(chat_sessions)
                     .where(chat_sessions.c.id == session_id)

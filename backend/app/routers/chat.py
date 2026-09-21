@@ -19,8 +19,8 @@ from app.chat.session_manager import (
     get_user_sessions,
     load_session,
 )
-from app.core.dependencies import get_current_user, get_db_connection
-from app.database import async_engine
+from app.core.dependencies import get_current_user
+from app.database import async_engine, get_db
 from app.repositories import UserRepository
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.models import User
@@ -31,18 +31,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-# -------------------------------------------------------------------
-# POST /chat/message — HTTP (non-streaming) chat
-# -------------------------------------------------------------------
-
-
 @router.post("/message", response_model=ChatResponse)
 async def handle_message(
     request: ChatRequest,
     current_user: User = Depends(get_current_user),
-    conn: AsyncConnection = Depends(get_db_connection),
+    conn: AsyncConnection = Depends(get_db),
 ):
-    """Process a chat message through the router agent (HTTP, non-streaming)."""
     logger.info(
         "Message received from user %s: '%s'", current_user.email, request.message
     )
@@ -53,38 +47,12 @@ async def handle_message(
     return ChatResponse(**result)
 
 
-# -------------------------------------------------------------------
-# WebSocket /chat/ws — Streaming Chat
-# -------------------------------------------------------------------
-
-
 @router.websocket("/ws")
 async def ws_chat(websocket: WebSocket):
-    """WebSocket endpoint for streaming chat.
-
-    Protocol:
-      1. Client connects and sends an initial auth message:
-         {"type": "auth", "token": "<JWT token>"}
-      2. Server responds with:
-         {"type": "auth_ok", "user_id": "...", "email": "..."}
-      3. Client sends chat messages:
-         {"type": "message", "session_id": "...", "message": "...",
-          "message_type": "text", "action_data": {...}}
-      4. Server streams back LLM text chunks:
-         {"type": "text_chunk", "session_id": "...", "content": "...", "style": "default"}
-      5. Server streams back BDUI elements:
-         {"type": "element", "session_id": "...", "element": {...}}
-      6. Server sends completion:
-         {"type": "done", "session_id": "...", "message_id": "...",
-          "response": {...}, "suggestions": [...]}
-      7. Server sends errors:
-         {"type": "error", "message": "..."}
-    """
     await websocket.accept()
     user = None
 
     try:
-        # --- Auth handshake ---
         auth_data = await websocket.receive_json()
         if auth_data.get("type") != "auth" or not auth_data.get("token"):
             await websocket.send_json(
@@ -109,7 +77,6 @@ async def ws_chat(websocket: WebSocket):
         )
         logger.info("WS Chat | Connected: %s", user.email)
 
-        # --- Message loop ---
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type", "")
@@ -124,7 +91,6 @@ async def ws_chat(websocket: WebSocket):
                 )
                 continue
 
-            # Build ChatRequest from WebSocket data
             try:
                 body = ChatRequest(
                     session_id=data.get("session_id"),
@@ -139,9 +105,8 @@ async def ws_chat(websocket: WebSocket):
                 )
                 continue
 
-            # Process with streaming
             try:
-                async with get_db_connection_ctx() as conn:
+                async with _get_db_ctx() as conn:
 
                     async def send_fn(payload: dict):
                         await websocket.send_json(payload)
@@ -174,24 +139,13 @@ async def ws_chat(websocket: WebSocket):
             pass
 
 
-# -------------------------------------------------------------------
-# GET /chat/sessions
-# -------------------------------------------------------------------
-
-
 @router.get("/sessions")
 async def list_sessions(
     current_user: User = Depends(get_current_user),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """List active chat sessions for the current user."""
     sessions = await get_user_sessions(str(current_user.id), limit=limit)
     return {"sessions": sessions}
-
-
-# -------------------------------------------------------------------
-# GET /chat/history
-# -------------------------------------------------------------------
 
 
 @router.get("/history")
@@ -200,7 +154,6 @@ async def get_history(
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
 ):
-    """Retrieve conversation history for a session."""
     session = await load_session(session_id)
     if not session or str(session.get("user_id")) != str(current_user.id):
         raise HTTPException(
@@ -215,20 +168,13 @@ async def get_history(
     }
 
 
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
-
 @asynccontextmanager
-async def get_db_connection_ctx():
-    """Async context manager for a DB connection (used in WebSocket handler)."""
+async def _get_db_ctx():
     async with async_engine.begin() as conn:
         yield conn
 
 
 async def _authenticate_ws(token: str) -> User | None:
-    """Validate a JWT token and return the User, or None."""
     payload = decode_token(token)
     if not payload:
         return None

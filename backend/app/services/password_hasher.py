@@ -10,7 +10,6 @@ class IPasswordHasher(Protocol):
 
 
 class BcryptPasswordHasher:
-    """Default hasher. Good enough for most use cases, fast-ish."""
 
     def hash(self, password: str) -> str:
         import bcrypt
@@ -23,8 +22,6 @@ class BcryptPasswordHasher:
 
 
 class Argon2PasswordHasher:
-    """Memory-hard hasher. Better resistance to GPU/ASIC brute-forcing
-    compared to bcrypt. Use for higher-security requirements."""
 
     def hash(self, password: str) -> str:
         from argon2 import PasswordHasher

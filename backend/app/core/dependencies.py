@@ -27,24 +27,19 @@ def get_auth_service() -> AuthService:
 security = HTTPBearer()
 
 
-async def get_db_connection():
-    async for conn in get_db():
-        yield conn
-
-
-def get_user_repository(conn: AsyncConnection = Depends(get_db_connection)) -> UserRepository:
+def get_user_repository(conn: AsyncConnection = Depends(get_db)) -> UserRepository:
     return UserRepository(conn)
 
 
-def get_book_repository(conn: AsyncConnection = Depends(get_db_connection)) -> BookRepository:
+def get_book_repository(conn: AsyncConnection = Depends(get_db)) -> BookRepository:
     return BookRepository(conn)
 
 
-def get_reading_repository(conn: AsyncConnection = Depends(get_db_connection)) -> ReadingRepository:
+def get_reading_repository(conn: AsyncConnection = Depends(get_db)) -> ReadingRepository:
     return ReadingRepository(conn)
 
 
-def get_book_service(conn: AsyncConnection = Depends(get_db_connection)) -> BookService:
+def get_book_service(conn: AsyncConnection = Depends(get_db)) -> BookService:
     return BookService(
         repo=BookRepository(conn),
         search_client=GoogleBooksClient(),
@@ -52,7 +47,7 @@ def get_book_service(conn: AsyncConnection = Depends(get_db_connection)) -> Book
     )
 
 
-def get_reading_service(conn: AsyncConnection = Depends(get_db_connection)) -> ReadingService:
+def get_reading_service(conn: AsyncConnection = Depends(get_db)) -> ReadingService:
     return ReadingService(
         reading_repo=ReadingRepository(conn),
         book_repo=BookRepository(conn),

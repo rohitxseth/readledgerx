@@ -1,12 +1,4 @@
-"""Chat UI helpers — dict builders for Backend-Driven UI elements.
-
-All functions return plain dicts. The frontend's BduiRenderer
-switches on element["type"] and renders the appropriate widget.
-"""
-
-
 def text(content: str, style: str = "default") -> dict:
-    """Markdown text block. style: default | success | warning | error | info."""
     return {"type": "text", "content": content, "style": style}
 
 
@@ -39,10 +31,7 @@ def book_list(books: list) -> dict:
     return {"type": "book_list", "books": books}
 
 
-# Composite helpers
-
 def composite(elements: list) -> dict:
-    """Bundle multiple UI elements into one response."""
     return {"type": "composite", "elements": elements}
 
 
@@ -55,7 +44,6 @@ def error_response(message: str) -> dict:
 
 
 def help_card() -> dict:
-    """Grid card showing available bot features."""
     return {
         "type": "help_card",
         "title": "Here's how I can assist you:",
@@ -88,17 +76,10 @@ def help_card() -> dict:
     }
 
 
-# Example queries offered wherever the bot points users at search. They are
-# phrased so that tapping one as a suggestion chip runs a real search.
 SEARCH_EXAMPLES = ["Sci-fi books", "Books by Ayn Rand", "Books about stoicism"]
 
 
 def recommendation_decline() -> list:
-    """Elements for a request the bot can't serve yet: "what should I read?".
-
-    Returned instead of guessing. Handing a recommendation request to search
-    produces an invented query ("fiction", "bestsellers") and irrelevant books.
-    """
     return [
         text(
             "I can't recommend books yet — that isn't supported. "
@@ -125,7 +106,6 @@ def single_book_progress(message: str, progress_data: dict) -> list:
 
 
 def summarize_elements(elements: list, include_text: bool = True) -> list[str]:
-    """Build a plain-text summary from BDUI elements (for DB storage / LLM context)."""
     parts: list[str] = []
     for el in elements:
         t = el.get("type", "")

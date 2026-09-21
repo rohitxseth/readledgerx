@@ -1,5 +1,3 @@
-"""ReadingService — business logic for reading sessions and progress."""
-
 import logging
 import uuid as uuid_module
 from datetime import date, datetime
@@ -28,13 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 class ReadingService:
-    # Ranking functions for get_all_progress(sort_by=...). All rank highest-first.
     _SORT_KEYS = {
         "pages_read": lambda p: p.pages_read,
         "percent_complete": lambda p: p.progress_percentage,
-        # read_on is date-granular; fall back to the newest session timestamp so
-        # two books read on the same day still order correctly. timestamp()
-        # keeps the key a float, avoiding naive/aware datetime comparisons.
         "last_read": lambda p: (
             p.last_read_date,
             p.last_session_at.timestamp() if p.last_session_at else 0.0,
@@ -56,7 +50,6 @@ class ReadingService:
         pages_read: int,
         session_date: datetime | None = None,
     ) -> ReadingSession:
-        # don't let users log more pages than the book actually has remaining
         if pages_read > 0:
             book = await self.book_repo.get_by_id(book_id)
             if book and book.page_count > 0:
@@ -92,12 +85,6 @@ class ReadingService:
         sort_by: ProgressSort | str | None = None,
         limit: int | None = None,
     ) -> list[BookProgress]:
-        """Return tracked books, optionally filtered, ranked and truncated.
-
-        *sort_by* ranks highest-first, which is what aggregate questions want
-        ("most read book", "what did I read most recently"). Combined with
-        *limit* it answers them without a second LLM turn.
-        """
         all_progress = await self.reading_repo.get_all_progress(user_id)
 
         if filter_by == "completed":
@@ -134,7 +121,6 @@ class ReadingService:
         target_pages: int,
         session_date: datetime | None = None,
     ) -> dict:
-        # sanity check against total page count
         book = await self.book_repo.get_by_id(book_id)
         if book and book.page_count > 0 and target_pages > book.page_count:
             raise ReadingLimitError(
@@ -154,7 +140,6 @@ class ReadingService:
     async def compute_reading_stats(
         self, user_id: uuid_module.UUID, book_id: uuid_module.UUID
     ) -> dict | None:
-        """Compute derived stats (completion status, pages remaining) for a tracked book."""
         progress = await self.reading_repo.get_book_progress(user_id, book_id)
         if not progress:
             return None
@@ -170,23 +155,9 @@ class ReadingService:
             "percentage": progress.progress_percentage,
         }
 
-    # ------------------------------------------------------------------
-    # Operations used by the adapters (chat agent and REST API)
-    #
-    # Each takes an already-resolved book id and owns every rule about the
-    # operation, so an adapter only has to parse its input and render the
-    # result. Rule violations raise domain exceptions, never ValueError.
-    # ------------------------------------------------------------------
-
     async def start_tracking(
         self, user_id: uuid_module.UUID, book_id: uuid_module.UUID, pages: int = 0
     ) -> TrackingResult:
-        """Start tracking a book — idempotent, and never drops given pages.
-
-        Tracking is a reading session, zero pages if none were given. Tracking
-        a book that is already tracked adds nothing unless pages were given,
-        in which case they are logged rather than discarded.
-        """
         book = await self._require_book(book_id)
         self._validate_pages(pages)
         existing = await self.reading_repo.get_book_progress(user_id, book_id)
@@ -210,12 +181,6 @@ class ReadingService:
         percentage: float | None = None,
         session_date: datetime | date | None = None,
     ) -> ReadingLogResult:
-        """Apply one change to a book's progress.
-
-        add/reduce move progress by an amount, set moves it to an absolute
-        page, remove stops tracking. The amount may be given as a percentage
-        of the book, converted here using its page count.
-        """
         if action not in get_args(LogAction):
             raise BusinessLogicError(f"Unknown action '{action}'.")
         book = await self._require_book(book_id)
@@ -246,11 +211,6 @@ class ReadingService:
         )
 
     async def undo_last_log(self, user_id: uuid_module.UUID) -> UndoResult:
-        """Remove the most recently logged session, whichever book it was for.
-
-        Undo is exact only for appended entries. reduce and set rewrite earlier
-        sessions in place, so they can't be undone by removing the newest one.
-        """
         session = await self.reading_repo.delete_latest_session(user_id)
         if session is None:
             raise EntityNotFoundError("There's nothing to undo — no reading has been logged yet.")
@@ -260,10 +220,6 @@ class ReadingService:
             progress=await self.reading_repo.get_book_progress(user_id, session.book_id),
         )
 
-    # ------------------------------------------------------------------
-    # Rules
-    # ------------------------------------------------------------------
-
     async def _require_book(self, book_id: uuid_module.UUID) -> Book:
         book = await self.book_repo.get_by_id(book_id)
         if book is None:
@@ -272,7 +228,6 @@ class ReadingService:
 
     @staticmethod
     def _validate_pages(pages: int) -> None:
-        """Reuse the value object's invariants, surfaced as a domain error."""
         try:
             PageCount(pages)
         except (TypeError, ValueError) as e:
@@ -281,7 +236,6 @@ class ReadingService:
     def _amount(
         self, book: Book, action: str, pages: int | None, percentage: float | None
     ) -> int:
-        """The page amount for an action, converting a percentage if needed."""
         if pages is None and percentage is None:
             raise BusinessLogicError("How many pages? Give a page count or a percentage.")
 
@@ -296,8 +250,6 @@ class ReadingService:
             pages = int((percentage / 100) * book.page_count)
 
         self._validate_pages(pages)
-        # Zero is a real target for set ("back to the start") but a no-op for
-        # add and reduce, which would otherwise record an empty event.
         if pages == 0 and action in ("add", "reduce"):
             raise BusinessLogicError("The number of pages must be greater than zero.")
         return pages

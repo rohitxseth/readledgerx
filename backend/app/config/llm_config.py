@@ -5,19 +5,10 @@ from app.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
-# =====================================================================
-# LangChain LLM (used by the router agent / tool-calling architecture)
-# =====================================================================
-
 _langchain_llm = None
 
 
 def get_langchain_llm():
-    """Return a LangChain chat model configured from settings.
-
-    Supports Azure OpenAI and OpenAI. Returns None if no credentials are set.
-    The instance is lazily created and cached.
-    """
     global _langchain_llm
     if _langchain_llm is not None:
         return _langchain_llm

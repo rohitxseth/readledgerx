@@ -14,7 +14,6 @@ from app.schemas.models import LogAction, ProgressFilter, ProgressSort
 
 logger = logging.getLogger(__name__)
 
-# Tool schemas — these get bound to the LLM via bind_tools()
 LOG_READING_DEF = {
     "type": "function",
     "function": {
@@ -142,11 +141,6 @@ TOOL_DEFINITIONS = [
     LOG_READING_DEF, SEARCH_BOOKS_DEF, SHOW_PROGRESS_DEF, START_TRACKING_DEF, UNDO_LAST_LOG_DEF,
 ]
 
-
-# Words with no searchable meaning on their own. A query made only of these is
-# the model inventing a search for a request it can't serve — usually a
-# recommendation — rather than a user naming something. Genres ("fiction",
-# "sci-fi") are deliberately absent: they are real searches.
 _NON_SPECIFIC_TERMS = frozenset({
     "recommend", "recommended", "recommendation", "recommendations", "recs",
     "suggest", "suggested", "suggestion", "suggestions",
@@ -161,25 +155,15 @@ _NON_SPECIFIC_TERMS = frozenset({
 
 
 def _is_non_specific_query(query: str) -> bool:
-    """True when *query* has words and every one of them is filler.
-
-    A query with no words at all isn't filler, it's empty — and rejecting an
-    empty search is the service's rule, not this guard's.
-    """
     words = re.findall(r"[\w'-]+", (query or "").lower())
     return bool(words) and all(w in _NON_SPECIFIC_TERMS for w in words)
 
 
-# How many shown results to remember for the next turn.
 _MAX_RECENT_RESULTS = 10
-# Descriptions are the only unbounded field on a Book, so cap them rather than
-# dropping them — a book first stored via a remembered result would otherwise
-# land in the catalogue with no description at all.
 _MAX_STORED_DESCRIPTION = 1000
 
 
 def _compact_search_results(books: list) -> list[dict]:
-    """Shrink search results for storage in session metadata."""
     compact = []
     for book in books[:_MAX_RECENT_RESULTS]:
         data = book.model_dump(mode="json")
@@ -191,7 +175,6 @@ def _compact_search_results(books: list) -> list[dict]:
 
 
 def _recent_results(context: dict | None) -> list[dict]:
-    """Book payloads shown to this user earlier in the conversation."""
     metadata = (context or {}).get("metadata") or {}
     if not isinstance(metadata, dict):
         return []
@@ -200,14 +183,12 @@ def _recent_results(context: dict | None) -> list[dict]:
 
 
 def _preferred_volume_id(args: dict | None) -> str | None:
-    """A volume id carried explicitly by a clicked action button."""
     action_data = (args or {}).get("action_data") or {}
     payload = action_data.get("payload") or {}
     return payload.get("google_books_id") or (args or {}).get("google_books_id")
 
 
 def _book_ref(book) -> dict:
-    """Button payload pinning a specific volume, so a click can't drift edition."""
     ref = {"book_title": book.title}
     if book.google_books_id:
         ref["google_books_id"] = book.google_books_id
@@ -229,13 +210,6 @@ def _parse_date(date_str: str | None) -> datetime | None:
 
 
 async def _resolve_book(title: str, conn, context: dict | None = None, args: dict | None = None):
-    """Shared helper: resolve a book title or return an error response dict.
-
-    Prefers a volume the user was actually shown — a clicked button's id first,
-    then the most recent search results — before falling back to the full
-    resolution pipeline, which may otherwise pick a different edition.
-
-    Returns (book, None) on success, (None, error_dict) on failure."""
     volume_id = _preferred_volume_id(args)
     if not title and not volume_id:
         return None, {
@@ -325,9 +299,6 @@ async def execute_search_books(args: dict, context: dict) -> dict:
     search_by = args.get("search_by")
     conn = context.get("conn")
 
-    # Agent-only backstop for recommendation requests the router's intercept
-    # didn't catch: it defends against the model inventing a filler query, so
-    # it belongs to this adapter, not to the search operation itself.
     if _is_non_specific_query(query):
         logger.info("search_books: declined non-specific query %r", query)
         return {
@@ -351,8 +322,6 @@ async def execute_search_books(args: dict, context: dict) -> dict:
     elements.append(ui.book_list([book.model_dump(mode="json") for book in books]))
     elements.append(ui.text("Say **track <book title>** to start tracking any of these books."))
 
-    # Remember exactly which volumes were shown, so tracking one of them by title
-    # resolves to the same edition instead of re-running the pipeline.
     return {
         "elements": elements,
         "suggestions": ["Track a book", "Search another", "Show my progress"],
@@ -360,7 +329,6 @@ async def execute_search_books(args: dict, context: dict) -> dict:
     }
 
 
-# Headers for ranked results, keyed by (sort_by, is_single_result).
 _RANKED_HEADERS = {
     ("pages_read", True): "Your most read book:",
     ("pages_read", False): "Your books, most read first:",
@@ -386,7 +354,6 @@ async def execute_show_progress(args: dict, context: dict) -> dict:
     user = context.get("user")
     reading_service = get_reading_service(conn)
 
-    # single-book progress
     if book_title:
         book, err = await _resolve_book(book_title, conn, context, args)
         if err:
@@ -414,7 +381,6 @@ async def execute_show_progress(args: dict, context: dict) -> dict:
             "metadata_updates": {"last_book_title": book.title},
         }
 
-    # all-books progress (with optional filter handled by service layer now)
     all_progress = await reading_service.get_all_progress(
         user.id, filter_by=filter_type, sort_by=sort_by, limit=limit
     )
@@ -452,7 +418,6 @@ async def execute_show_progress(args: dict, context: dict) -> dict:
         header = _FILTER_HEADERS.get(filter_type, "Your reading progress:")
 
     if single:
-        # One ranked answer reads better as a card than as a one-item list.
         elements = ui.single_book_progress(header, all_progress[0].model_dump(mode="json"))
     else:
         elements = [ui.text(header)]
@@ -474,8 +439,6 @@ async def execute_start_tracking(args: dict, context: dict) -> dict:
         return err
 
     try:
-        # The model sometimes routes "I read 300 pages of X" here; the service
-        # logs those pages instead of dropping them.
         result = await get_reading_service(conn).start_tracking(
             user.id, book.id, pages=args.get("pages") or 0
         )

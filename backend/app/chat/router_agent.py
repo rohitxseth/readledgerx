@@ -1,12 +1,3 @@
-"""
-Router Agent — single LLM-powered agent that handles all chat interactions.
-
-The agent:
-  1. Converses with the user naturally to identify intent and collect entities
-  2. Calls the appropriate workflow tool once all required data is gathered
-  3. Handles greetings, help, and irrelevant questions gracefully
-"""
-
 import asyncio
 import json
 import logging
@@ -23,14 +14,12 @@ from app.config.llm_config import get_langchain_llm
 
 logger = logging.getLogger(__name__)
 
-# Default suggestions when no tool provides them
 _DEFAULT_SUGGESTIONS = [
     "Search for a book",
     "Show my progress",
     "Help",
 ]
 
-# Contextual suggestion mapping by tool name
 _TOOL_SUGGESTIONS = {
     "search_books": ["Track a book", "Search another", "Show my progress"],
     "start_tracking": ["Log pages", "Show progress", "Search books"],
@@ -40,10 +29,6 @@ _TOOL_SUGGESTIONS = {
 
 _HELP_PHRASES = frozenset({"help", "help me", "what can you do", "commands", "options"})
 
-# Requests for a recommendation. The app can't recommend, and passing these to
-# the LLM makes it invent a search query ("fiction", "bestsellers") and return
-# irrelevant books. Patterns match the *request*, not the bare word, so topic
-# searches like "books about recommendation systems" still reach the agent.
 _RECOMMENDATION_RX = re.compile("|".join(f"(?:{p})" for p in (
     r"^(?:please\s+)?(?:recommend|suggest)\b",
     r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:recommend|suggest)\b",
@@ -56,9 +41,6 @@ _RECOMMENDATION_RX = re.compile("|".join(f"(?:{p})" for p in (
     r"\bany\s+(?:good|great|decent)\s+(?:books?|novels?|reads?)\b",
 )))
 
-# Replies to the decline's "Search by …" buttons. Answered here rather than by
-# the LLM, which reads search_by's title|author enum literally and can tell the
-# user that genre search is unsupported — contradicting the decline.
 _SEARCH_PROMPTS = {
     "author": ("Which author? Type it like **books by Ayn Rand**.",
                ["Books by Ayn Rand", "Books by Brandon Sanderson"]),
@@ -72,11 +54,6 @@ _DEFAULT_SEARCH_PROMPT = (
     ui.SEARCH_EXAMPLES,
 )
 
-
-# The words the patterns above key on. Misspellings of these ("recomment",
-# "reccomend", "sugest") are folded back before matching, so a typo gets the
-# same fixed reply as the correct spelling instead of falling through to the
-# LLM, which can only answer in plain text.
 _INTENT_WORDS = (
     "recommend", "recommends", "recommended", "recommendation", "recommendations",
     "suggest", "suggests", "suggested", "suggestion", "suggestions",
@@ -84,7 +61,6 @@ _INTENT_WORDS = (
 
 
 def _edit_distance(a: str, b: str) -> int:
-    """Optimal string alignment distance: an adjacent swap counts as one edit."""
     prev2, prev = None, list(range(len(b) + 1))
     for i in range(1, len(a) + 1):
         cur = [i] + [0] * len(b)
@@ -97,12 +73,6 @@ def _edit_distance(a: str, b: str) -> int:
 
 
 def _correct_intent_typo(word: str) -> str:
-    """Return the intent word *word* is a misspelling of, or *word* unchanged.
-
-    Deliberately conservative. The first letter must match and short words get
-    one edit, long words two — otherwise "biggest" is two edits from "suggest",
-    and "biggest book on my shelf?" would be declined as a recommendation.
-    """
     if word in _INTENT_WORDS or len(word) < 5:
         return word
     best, best_distance = word, None
@@ -131,8 +101,6 @@ _MAX_HISTORY_TURNS = 20
 
 
 class RouterAgent:
-    """Encapsulates a single run of the LLM-powered chat agent."""
-
     def __init__(
         self,
         session: dict,
@@ -147,11 +115,8 @@ class RouterAgent:
         self.llm = get_langchain_llm()
 
     async def run(self, user_input: dict, history: list[dict]) -> dict:
-        """Run one agent turn and return response, updates, and suggestions."""
         logger.info("agent.run: session=%s", self.session_id)
 
-        # Fixed replies come first: they cost nothing, can't drift, and work
-        # even when no LLM is configured.
         intercepted = self._intercept(user_input)
         if intercepted is not None:
             return intercepted
@@ -205,7 +170,6 @@ class RouterAgent:
         return self._error_result("I'm having trouble processing your request. Please try again.")
 
     def _intercept(self, user_input: dict) -> dict | None:
-        """Answer requests that have a fixed reply, without calling the LLM."""
         if user_input.get("message_type") == "action_click":
             action_data = user_input.get("action_data") or {}
             if action_data.get("action") != "search_prompt":
@@ -267,9 +231,6 @@ class RouterAgent:
             meta_updates = result.get("metadata_updates", {})
             if meta_updates:
                 self.metadata.update(meta_updates)
-                # Store the dict itself: the column is JSONB, so json.dumps here
-                # would persist a JSON *string* scalar rather than an object,
-                # leaving it unqueryable by JSONB operators.
                 session_updates["metadata"] = self.metadata
                 
             if result.get("suggestions"):

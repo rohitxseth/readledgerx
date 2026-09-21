@@ -1,7 +1,3 @@
-"""
-BookService — orchestrates book resolution.
-"""
-
 import logging
 
 from pydantic import ValidationError
@@ -14,9 +10,6 @@ from app.services.book_intelligence import BookIntelligenceService
 
 logger = logging.getLogger(__name__)
 
-# How much of a remembered title a loose query must cover before it is treated
-# as naming that book. "fountainhead" covers 75% of "The Fountainhead" (a
-# match); "Dune" covers 33% of "Dune Messiah" (not a match).
 _MIN_QUERY_TITLE_RATIO = 0.6
 
 
@@ -31,14 +24,9 @@ class BookService:
         self.search_client = search_client
         self.intelligence = intelligence
 
-    # ------------------------------------------------------------------
-    # Operations used by the adapters (chat agent and REST API)
-    # ------------------------------------------------------------------
-
     async def search(
         self, query: str, search_by: str | None = None, max_results: int = 10
     ) -> list[Book]:
-        """Search the external catalogue. Results are not stored."""
         if not (query or "").strip():
             raise BusinessLogicError("Give something to search for.")
         return await self.search_client.search_books(
@@ -52,12 +40,6 @@ class BookService:
         volume_id: str | None = None,
         recent_results: list[dict] | None = None,
     ) -> Book:
-        """Resolve a reference to one stored Book, or raise BookResolutionError.
-
-        An explicit volume id is the strongest reference and wins outright —
-        it's what a REST client sends after a search, and what an agent's
-        button carries. A title goes through the resolution pipeline.
-        """
         if volume_id:
             book = await self.resolve_by_volume_id(volume_id)
             if book:
@@ -72,7 +54,6 @@ class BookService:
         raise BookResolutionError("Name a book by title or volume id.")
 
     async def resolve_by_volume_id(self, volume_id: str) -> Book | None:
-        """The stored Book for an exact volume, fetching and storing it if new."""
         existing = await self.repo.get_by_google_volume_id(volume_id)
         if existing:
             return existing
@@ -82,23 +63,11 @@ class BookService:
         logger.info("Storing book fetched by volume id: '%s' (%s)", book.title, volume_id)
         return await self.repo.create(book)
 
-    # ------------------------------------------------------------------
-    # Resolution pipeline
-    # ------------------------------------------------------------------
-
     async def resolve_book(
         self,
         title: str,
         recent_results: list[dict] | None = None,
     ) -> Book | None:
-        """Resolve *title* to a canonical Book.
-
-        *recent_results* are book payloads the user was shown earlier in this
-        conversation. When the title refers to one of them, that exact Google
-        Books volume is used. Without this, typing the title of a book from a
-        search result re-runs the whole pipeline against a different query and
-        can land on a different edition with a different page count.
-        """
         if recent_results:
             matched = self._match_recent_result(title, recent_results)
             if matched:
@@ -127,7 +96,6 @@ class BookService:
             search_query = normalized.normalized_query
             logger.info(f"Query normalized to: '{search_query}'")
 
-            # Try DB again with normalized query if it changed
             if search_query != title:
                 existing_book_norm = await self.repo.get_by_title(search_query)
                 if existing_book_norm:
@@ -160,13 +128,8 @@ class BookService:
         logger.info(f"Book saved successfully: '{saved_book.title}' (ID: {saved_book.id})")
         return saved_book
 
-    # ------------------------------------------------------------------
-    # Recent-result resolution
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _match_recent_result(title: str, recent_results: list[dict]) -> dict | None:
-        """Find the shown result the user most likely means, or None."""
         query = title.strip().lower()
         if not query:
             return None
@@ -174,22 +137,14 @@ class BookService:
         def shown(result: dict) -> str:
             return (result.get("title") or "").strip().lower()
 
-        # 1. Exact title — unambiguous.
         for result in recent_results:
             if shown(result) == query:
                 return result
 
-        # 2. A shown title sitting inside a longer query:
-        #    "The Fountainhead by Ayn Rand" -> "The Fountainhead".
-        #    Prefer the longest such title, i.e. the most specific match.
         contained = [r for r in recent_results if shown(r) and shown(r) in query]
         if contained:
             return max(contained, key=lambda r: len(shown(r)))
 
-        # 3. The query sitting inside a shown title ("fountainhead" ->
-        #    "The Fountainhead"), but only when it covers most of that title.
-        #    Without this guard, asking about "Dune" right after a search for
-        #    "Dune Messiah" would resolve to the wrong book.
         partial = [
             r for r in recent_results
             if shown(r)
@@ -202,7 +157,6 @@ class BookService:
         return None
 
     async def _book_from_recent_result(self, data: dict) -> Book | None:
-        """Return the stored Book for a shown result, persisting it if new."""
         volume_id = data.get("google_books_id")
         if not volume_id:
             return None
@@ -214,7 +168,5 @@ class BookService:
         try:
             book = Book(**data)
         except ValidationError:
-            # Payload too sparse to rebuild (e.g. an action carrying only an id)
-            # — fall through to the normal pipeline.
             return None
         return await self.repo.create(book)

@@ -36,9 +36,6 @@ class BookIntelligenceService:
         self.llm = get_langchain_llm()
 
     async def normalize_query(self, raw_query: str) -> NormalizedQuery | None:
-        """
-        Uses an LLM to correct, normalize, or formalize a fuzzy book query.
-        """
         if not self.llm:
             logger.warning("LLM not configured. Falling back to raw query.")
             return None
@@ -55,18 +52,12 @@ class BookIntelligenceService:
                 ("system", system_prompt),
                 ("user", f"Normalize this book query: '{raw_query}'")
             ]
-            # using ainvoke for async LangChain execution
-            response = await structured_llm.ainvoke(messages)
-            return response
+            return await structured_llm.ainvoke(messages)
         except Exception as e:
             logger.error(f"Failed to normalize query with LLM: {e}")
             return None
 
     async def select_best_match(self, raw_query: str, results: list[Book]) -> Book | None:
-        """
-        Given a user query and a list of potentially matching Google Books results,
-        uses an LLM to select the most relevant one.
-        """
         if not results:
             return None
             
@@ -87,7 +78,6 @@ class BookIntelligenceService:
         books_context = []
         for i, b in enumerate(results):
             author_str = ", ".join(b.authors) if b.authors else "Unknown Author"
-            # Truncate description to save passing enormous tokens to LLM
             desc = b.description[:300] + "..." if b.description and len(b.description) > 300 else b.description
             
             books_context.append(
@@ -118,4 +108,4 @@ class BookIntelligenceService:
                 
         except Exception as e:
             logger.error(f"Failed to select best match with LLM: {e}")
-            return results[0]  # Fallback to the first result
+            return results[0]

@@ -4,7 +4,6 @@ import re
 
 
 class PageCount:
-    """Immutable value object representing a non-negative page count."""
 
     MAX = 100_000
 
@@ -34,7 +33,6 @@ class PageCount:
 
 
 class Email:
-    """Immutable value object representing a validated email address."""
 
     _PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

@@ -1,9 +1,3 @@
-"""Chat service — orchestrates a single WebSocket / HTTP chat turn.
-
-Flow: resolve session → persist user message → router agent →
-      persist session updates → persist assistant response → send done.
-"""
-
 import logging
 import uuid
 
@@ -26,29 +20,12 @@ from app.schemas.models import User
 logger = logging.getLogger(__name__)
 
 
-# ------------------------------------------------------------------
-# Public API
-# ------------------------------------------------------------------
-
-
 async def process_message(
     body: ChatRequest,
     user: User,
     conn: AsyncConnection,
     send_fn=None,
 ) -> dict:
-    """Run one chat turn.
-
-    When *send_fn* is provided (WebSocket mode), streams BDUI elements
-    and text chunks live via the callback, then sends a ``done`` frame.
-
-    When *send_fn* is ``None`` (HTTP mode), runs the agent without
-    streaming and returns the full result dict.
-
-    Returns a dict with ``session_id``, ``response``, ``suggestions``,
-    and ``message_id``.
-    """
-    # 1. Resolve session
     session = await _resolve_session(body, user)
     session_id = str(session["id"])
     logger.info(
@@ -58,7 +35,6 @@ async def process_message(
         body.message_type.value,
     )
 
-    # 2. Persist user message
     user_input, user_content = _build_user_input(body)
     await add_message(
         session_id=session_id,
@@ -67,10 +43,8 @@ async def process_message(
         message_type=body.message_type.value,
     )
 
-    # 3. Load history and run the agent
     history = await get_conversation_history(session_id, 30)
 
-    # Build execution context for tools (they need conn + user)
     tool_context = {
         "conn": conn,
         "user": user,
@@ -78,7 +52,6 @@ async def process_message(
         "metadata": parse_metadata(session.get("metadata")),
     }
 
-    # Build stream callback for WebSocket mode
     async def stream_callback(element: dict):
         if element.get("type") == "text_chunk":
             await send_fn({"type": "text_chunk", "session_id": session_id, **element})
@@ -97,12 +70,10 @@ async def process_message(
         history=history,
     )
 
-    # 4. Persist session updates
     session_updates = result.get("session_updates", {})
     if session_updates:
         await update_session(session_id, session_updates)
 
-    # 5. Persist assistant response
     response_payload = result.get("response", {})
     assistant_msg_id = await add_message(
         session_id=session_id,
@@ -119,7 +90,6 @@ async def process_message(
         "suggestions": result.get("suggestions", []),
     }
 
-    # 6. Send done frame (WebSocket mode)
     if send_fn:
         await send_fn({"type": "done", **response_dict})
         logger.info("chat: completed session=%s", session_id)
@@ -127,13 +97,7 @@ async def process_message(
     return response_dict
 
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-
 async def _resolve_session(body: ChatRequest, user: User) -> dict:
-    """Load existing session or create a new one."""
     session = None
 
     if body.session_id:
@@ -150,7 +114,6 @@ async def _resolve_session(body: ChatRequest, user: User) -> dict:
 
 
 def _build_user_input(body: ChatRequest) -> tuple[dict, str]:
-    """Build user_input dict and a plain-text summary for DB storage."""
     if body.message_type == MessageType.ACTION_CLICK and body.action_data:
         user_content = f"[Action: {body.action_data.action}]"
     else:
@@ -165,7 +128,6 @@ def _build_user_input(body: ChatRequest) -> tuple[dict, str]:
 
 
 def _extract_text(response: dict) -> str:
-    """Pull plain text from a composite BDUI response for DB storage."""
     if not response:
         return ""
     elements = response.get("elements", [])

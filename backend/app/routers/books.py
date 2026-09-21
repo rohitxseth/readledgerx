@@ -1,10 +1,3 @@
-"""REST adapter for the book catalogue.
-
-A second adapter over the same services the chat agent uses. Each route
-parses its request, calls one service operation, and returns the result —
-every rule lives in the service, so the two adapters can't disagree.
-"""
-
 from fastapi import APIRouter, Depends, Query
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
@@ -21,11 +14,7 @@ router = APIRouter(prefix="/books", tags=["books"])
 
 
 class BookReference(BaseModel):
-    """A book, by title or by exact catalogue volume id (which wins if both)."""
-
     title: str | None = None
-    # Accept the name the search results use, too, so a client can post back
-    # exactly what it received.
     google_volume_id: str | None = Field(
         None, validation_alias=AliasChoices("google_volume_id", "google_books_id")
     )

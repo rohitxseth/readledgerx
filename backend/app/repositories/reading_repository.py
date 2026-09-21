@@ -21,7 +21,6 @@ class ReadingRepository:
         pages_read: int,
         session_date: datetime | None = None,
     ) -> ReadingSession:
-        # validate through value object — fails fast on negatives or absurd values
         PageCount(pages_read)
 
         if session_date is None:

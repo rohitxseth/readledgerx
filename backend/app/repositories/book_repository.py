@@ -19,15 +19,7 @@ class BookRepository:
         return BookMapper.from_db(dict(row._mapping)) if row else None
 
     async def get_by_title(self, title: str) -> Book | None:
-        """Best substring match for *title*, preferring the closest one.
-
-        The match is a substring LIKE, so "Dune" also matches "Dune Messiah".
-        Rank exact titles first, then prefix matches, then the shortest
-        remaining title, so the obvious answer wins instead of whichever row
-        the planner happened to return first.
-        """
         needle = title.lower().strip()
-        # escape any LIKE-special chars so user input is matched literally
         safe = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         lowered = func.lower(books.c.title)
 

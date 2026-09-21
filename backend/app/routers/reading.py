@@ -1,5 +1,3 @@
-"""REST adapter for reading progress — same services as the chat agent."""
-
 import datetime as dt
 
 from fastapi import APIRouter, Depends, Query

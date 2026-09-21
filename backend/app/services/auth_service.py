@@ -26,8 +26,6 @@ class AuthService:
         return self._token_service.decode_token(token)
 
 
-# Module-level shortcut for places that don't have the DI instance handy
-# (e.g. WebSocket auth where we can't use FastAPI Depends).
 _shared = AuthService()
 
 
