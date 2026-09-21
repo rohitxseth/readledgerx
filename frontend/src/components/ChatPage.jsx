@@ -23,43 +23,26 @@ function ChatPage({ onLogout }) {
   const inputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // ---- theme ----
   useEffect(() => {
     document.body.className = isDark ? "dark" : "";
     localStorage.setItem("theme", isDark ? "dark" : "light");
   }, [isDark]);
 
-  // ---- auto-scroll ----
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ---- focus input ----
   useEffect(() => {
     if (!isLoading) inputRef.current?.focus();
   }, [messages, isLoading]);
 
-  // ---- send message ----
   const handleSend = useCallback(
     (text) => {
-      const msg = typeof text === "string" ? text : input;
-      if (sendMessage(msg)) {
-        if (typeof text !== "string") setInput("");
-        else setInput("");
-      }
+      if (sendMessage(typeof text === "string" ? text : input)) setInput("");
     },
     [input, sendMessage],
   );
 
-  // ---- action button click ----
-  const handleAction = useCallback(
-    (action, payload) => {
-      sendAction(action, payload);
-    },
-    [sendAction],
-  );
-
-  // ---- form submit handler ----
   const onSubmit = (e) => {
     e.preventDefault();
     handleSend();
@@ -67,7 +50,6 @@ function ChatPage({ onLogout }) {
 
   return (
     <div className="chat-container">
-      {/* Header */}
       <div className="logo-header">
         <svg
           className="book-icon"
@@ -99,7 +81,6 @@ function ChatPage({ onLogout }) {
         </button>
       </div>
 
-      {/* Messages */}
       <div className="messages">
         {messages.length === 0 && (
           <div className="empty-state">
@@ -120,22 +101,18 @@ function ChatPage({ onLogout }) {
 
         {messages.map((msg, idx) => (
           <div key={idx} className={`message ${msg.role}`}>
-            {/* User message */}
             {msg.role === "user" && (
               <div className="message-content">{msg.content}</div>
             )}
 
-            {/* Assistant message */}
             {msg.role === "assistant" && (
               <div className="assistant-bubble">
-                {/* Streaming text */}
                 {msg._streaming && msg.streamText && (
                   <div className="bdui-text bdui-text--default">
                     {msg.streamText}
                   </div>
                 )}
 
-                {/* Progress indicator while streaming */}
                 {msg._streaming && msg.progressMsg && (
                   <div className="bdui-progress">
                     <div className="bdui-progress__spinner" />
@@ -145,25 +122,22 @@ function ChatPage({ onLogout }) {
                   </div>
                 )}
 
-                {/* Streaming elements (before done) */}
                 {msg._streaming &&
                   msg.elements?.map((el, i) => (
                     <BduiRenderer
                       key={i}
                       element={el}
-                      onAction={handleAction}
+                      onAction={sendAction}
                     />
                   ))}
 
-                {/* Finalized BDUI response */}
                 {!msg._streaming && msg.response && (
                   <BduiRenderer
                     element={msg.response}
-                    onAction={handleAction}
+                    onAction={sendAction}
                   />
                 )}
 
-                {/* Typing indicator */}
                 {msg._streaming &&
                   !msg.streamText &&
                   !msg.elements?.length &&
@@ -181,7 +155,6 @@ function ChatPage({ onLogout }) {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Suggestion chips (shown when not loading and messages exist) */}
       {suggestions.length > 0 && messages.length > 0 && !isLoading && (
         <div className="suggestion-bar">
           {suggestions.map((s, i) => (
@@ -197,7 +170,6 @@ function ChatPage({ onLogout }) {
         </div>
       )}
 
-      {/* Input */}
       <form onSubmit={onSubmit} className="input-form">
         <input
           ref={inputRef}

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
@@ -12,19 +10,19 @@ class TokenService:
         self,
         secret_key: str = settings.jwt_secret_key,
         algorithm: str = settings.algorithm,
-        default_expiry_minutes: int = 60 * 24 * 7,  # 7 days
+        default_expiry_minutes: int = 60 * 24 * 7,
     ):
         self._secret_key = secret_key
         self._algorithm = algorithm
         self._default_expiry_minutes = default_expiry_minutes
 
     def create_token(self, data: dict, expires_delta: timedelta | None = None) -> str:
-        to_encode = data.copy()
         expire = datetime.now(UTC) + (
             expires_delta or timedelta(minutes=self._default_expiry_minutes)
         )
-        to_encode.update({"exp": expire})
-        return jwt.encode(to_encode, self._secret_key, algorithm=self._algorithm)
+        return jwt.encode(
+            {**data, "exp": expire}, self._secret_key, algorithm=self._algorithm
+        )
 
     def decode_token(self, token: str) -> dict | None:
         try:

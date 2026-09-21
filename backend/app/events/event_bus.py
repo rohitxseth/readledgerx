@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import logging
 from collections import defaultdict
@@ -10,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class EventBus:
-
     def __init__(self) -> None:
         self._handlers: dict[type, list[Callable]] = defaultdict(list)
 
@@ -18,8 +15,7 @@ class EventBus:
         self._handlers[event_type].append(handler)
 
     async def publish(self, event: Any) -> None:
-        handlers = self._handlers.get(type(event), [])
-        for handler in handlers:
+        for handler in self._handlers.get(type(event), []):
             try:
                 result = handler(event)
                 if asyncio.iscoroutine(result):

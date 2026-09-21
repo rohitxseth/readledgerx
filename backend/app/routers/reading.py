@@ -61,7 +61,9 @@ async def undo_last_log(
 async def get_progress(
     filter_by: ProgressFilter | None = Query(None, alias="filter"),
     sort_by: ProgressSort | None = Query(None),
-    limit: int | None = Query(None, description="At most this many books; 0 or omitted means all."),
+    limit: int | None = Query(
+        None, description="At most this many books; 0 or omitted means all."
+    ),
     current_user: User = Depends(get_current_user),
     reading_service: ReadingService = Depends(get_reading_service),
 ):

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from app.services.password_hasher import BcryptPasswordHasher, IPasswordHasher
 from app.services.token_service import TokenService
 
@@ -24,10 +22,3 @@ class AuthService:
 
     def decode_token(self, token: str) -> dict | None:
         return self._token_service.decode_token(token)
-
-
-_shared = AuthService()
-
-
-def decode_token(token: str) -> dict | None:
-    return _shared.decode_token(token)

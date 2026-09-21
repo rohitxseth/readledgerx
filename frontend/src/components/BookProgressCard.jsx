@@ -22,9 +22,7 @@ function BookProgressCard({ data }) {
         <div className="book-info">
           <div className="book-title">{data.title}</div>
           <div className="book-authors">
-            {Array.isArray(data.authors)
-              ? data.authors.join(", ")
-              : data.authors || "Unknown Author"}
+            {data.authors.join(", ")}
           </div>
           <div className="progress-bar">
             <div

@@ -1,18 +1,14 @@
 import { Component } from "react";
 
-/**
- * Catches render errors in child components so the whole app doesn't white-screen.
- * In a chat UI this matters — a malformed BDUI element from the server
- * shouldn't crash the entire page.
- */
+// A malformed BDUI element from the server should break one message, not the page.
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false };
   }
 
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
+  static getDerivedStateFromError() {
+    return { hasError: true };
   }
 
   componentDidCatch(error, info) {
@@ -24,7 +20,7 @@ class ErrorBoundary extends Component {
       return (
         <div className="error-boundary">
           <p>Something went wrong rendering this element.</p>
-          <button onClick={() => this.setState({ hasError: false, error: null })}>
+          <button onClick={() => this.setState({ hasError: false })}>
             Try again
           </button>
         </div>

@@ -1,6 +1,5 @@
 import logging
-import uuid as _uuid
-from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import (
     APIRouter,
@@ -11,6 +10,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.chat.chat_service import process_message
@@ -19,12 +19,12 @@ from app.chat.session_manager import (
     get_user_sessions,
     load_session,
 )
-from app.core.dependencies import get_current_user
+from app.core.dependencies import authenticate, get_current_user
+from app.core.exceptions import DomainException
 from app.database import async_engine, get_db
-from app.repositories import UserRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.models import User
-from app.services.auth_service import decode_token
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +37,7 @@ async def handle_message(
     current_user: User = Depends(get_current_user),
     conn: AsyncConnection = Depends(get_db),
 ):
-    logger.info(
-        "Message received from user %s: '%s'", current_user.email, request.message
-    )
-
-    result = await process_message(request, current_user, conn)
-
-    logger.info("Response sent for session %s", result["session_id"])
-    return ChatResponse(**result)
+    return ChatResponse(**await process_message(request, current_user, conn))
 
 
 @router.websocket("/ws")
@@ -75,7 +68,7 @@ async def ws_chat(websocket: WebSocket):
         await websocket.send_json(
             {"type": "auth_ok", "user_id": str(user.id), "email": user.email}
         )
-        logger.info("WS Chat | Connected: %s", user.email)
+        logger.info("WebSocket connected: %s", user.email)
 
         while True:
             data = await websocket.receive_json()
@@ -92,33 +85,18 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             try:
-                body = ChatRequest(
-                    session_id=data.get("session_id"),
-                    session_name=data.get("session_name"),
-                    message=data.get("message"),
-                    message_type=data.get("message_type", "text"),
-                    action_data=data.get("action_data"),
-                )
-            except Exception as e:
+                body = ChatRequest.model_validate(data)
+            except ValidationError as e:
                 await websocket.send_json(
                     {"type": "error", "message": f"Invalid message format: {e}"}
                 )
                 continue
 
             try:
-                async with _get_db_ctx() as conn:
-
-                    async def send_fn(payload: dict):
-                        await websocket.send_json(payload)
-
-                    await process_message(body, user, conn, send_fn)
-
-            except HTTPException as he:
-                await websocket.send_json(
-                    {"type": "error", "code": he.status_code, "message": he.detail}
-                )
-            except Exception as e:
-                logger.error("WS Chat processing error: %s", e, exc_info=True)
+                async with async_engine.begin() as conn:
+                    await process_message(body, user, conn, websocket.send_json)
+            except Exception:
+                logger.exception("Chat message failed")
                 await websocket.send_json(
                     {
                         "type": "error",
@@ -128,15 +106,12 @@ async def ws_chat(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info(
-            "WS Chat | Disconnected: %s",
-            user.email if user else "unauthenticated",
+            "WebSocket disconnected: %s", user.email if user else "unauthenticated"
         )
-    except Exception as e:
-        logger.error("WS Chat error: %s", e, exc_info=True)
-        try:
+    except Exception:
+        logger.exception("WebSocket error")
+        with suppress(Exception):
             await websocket.close(code=1011, reason="Internal error")
-        except Exception:
-            pass
 
 
 @router.get("/sessions")
@@ -150,7 +125,7 @@ async def list_sessions(
 
 @router.get("/history")
 async def get_history(
-    session_id: str = Query(..., description="Session ID"),
+    session_id: str = Query(...),
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
 ):
@@ -161,35 +136,12 @@ async def get_history(
         )
 
     messages = await get_conversation_history(session_id, limit=limit)
-    return {
-        "session_id": session_id,
-        "messages": messages,
-        "total": len(messages),
-    }
-
-
-@asynccontextmanager
-async def _get_db_ctx():
-    async with async_engine.begin() as conn:
-        yield conn
+    return {"session_id": session_id, "messages": messages, "total": len(messages)}
 
 
 async def _authenticate_ws(token: str) -> User | None:
-    payload = decode_token(token)
-    if not payload:
-        return None
-
-    user_id_str = payload.get("sub")
-    if not user_id_str:
-        return None
-
-    try:
-        user_id = (
-            _uuid.UUID(user_id_str) if isinstance(user_id_str, str) else user_id_str
-        )
-    except (ValueError, AttributeError):
-        return None
-
     async with async_engine.begin() as conn:
-        user_repo = UserRepository(conn)
-        return await user_repo.get_by_id(user_id)
+        try:
+            return await authenticate(token, UserRepository(conn))
+        except DomainException:
+            return None

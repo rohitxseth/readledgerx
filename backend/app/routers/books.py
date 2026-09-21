@@ -1,3 +1,5 @@
+from typing import Self
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
@@ -20,7 +22,7 @@ class BookReference(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _names_a_book(self) -> "BookReference":
+    def _names_a_book(self) -> Self:
         if not (self.title or self.google_volume_id):
             raise ValueError("Give a title or a google_volume_id.")
         return self
@@ -37,7 +39,9 @@ class TrackRequest(BookReference):
 )
 async def search_books(
     q: str = Query(..., description="An author, title, genre or topic."),
-    search_by: str | None = Query(None, description="'title' or 'author' to narrow the search."),
+    search_by: str | None = Query(
+        None, description="'title' or 'author' to narrow the search."
+    ),
     book_service: BookService = Depends(get_book_service),
 ):
     return await book_service.search(q, search_by=search_by)
@@ -51,4 +55,6 @@ async def track_book(
     reading_service: ReadingService = Depends(get_reading_service),
 ):
     book = await book_service.resolve(body.title, volume_id=body.google_volume_id)
-    return await reading_service.start_tracking(current_user.id, book.id, pages=body.pages)
+    return await reading_service.start_tracking(
+        current_user.id, book.id, pages=body.pages
+    )

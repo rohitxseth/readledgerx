@@ -69,7 +69,7 @@ function App() {
           </div>
           <div className="auth-toggle-btn">
             <button onClick={() => setIsLogin(!isLogin)}>
-            {isLogin ? "Register" : "Login"}
+              {isLogin ? "Register" : "Login"}
             </button>
           </div>
         </div>

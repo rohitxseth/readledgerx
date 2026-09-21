@@ -15,9 +15,7 @@ function BookPreviewCard({ data }) {
             <div className="book-subtitle">{data.subtitle}</div>
           )}
           <div className="book-authors">
-            {Array.isArray(data.authors)
-              ? data.authors.join(", ")
-              : data.authors || "Unknown Author"}
+            {data.authors.join(", ")}
           </div>
           {data.published_date && (
             <div className="book-published">

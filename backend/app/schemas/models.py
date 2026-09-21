@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 class User(BaseModel):
     id: UUID
     email: str
-    username: str | None = None
     created_at: datetime
     hashed_password: str | None = None
 
@@ -51,35 +50,33 @@ class BookProgress(BaseModel):
     thumbnail_url: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Outcomes of reading operations
-#
-# Returned by ReadingService and serialised as-is by the REST API, so both the
-# chat agent and REST clients receive the same result for the same operation.
-# ---------------------------------------------------------------------------
-
 LogAction = Literal["add", "set", "reduce", "remove"]
 ProgressFilter = Literal["completed", "in_progress", "not_started"]
 ProgressSort = Literal["pages_read", "percent_complete", "last_read"]
 
 
+# The outcomes below are returned by ReadingService and serialised as-is by the
+# REST API, so the chat agent and REST clients get the same result for the
+# same operation.
+
+
 class TrackingResult(BaseModel):
     book: Book
     progress: BookProgress
-    created: bool                  # False when the book was already tracked
+    created: bool  # False when the book was already tracked
     pages_logged: int = 0
 
 
 class ReadingLogResult(BaseModel):
     action: LogAction
     book: Book
-    pages: int                     # amount applied, after any % conversion
-    pages_reduced: int | None = None     # reduce: can be less than asked
-    sessions_removed: int | None = None  # remove
-    progress: BookProgress | None = None  # None once a book is untracked
+    pages: int  # after converting a percentage to pages
+    pages_reduced: int | None = None  # can be less than asked for
+    sessions_removed: int | None = None
+    progress: BookProgress | None = None  # None once the book is untracked
 
 
 class UndoResult(BaseModel):
-    session: ReadingSession        # the entry that was removed
+    session: ReadingSession
     book: Book | None = None
     progress: BookProgress | None = None  # None if it was the book's only entry

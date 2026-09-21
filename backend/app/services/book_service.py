@@ -1,5 +1,3 @@
-import logging
-
 from pydantic import ValidationError
 
 from app.core.exceptions import BookResolutionError, BusinessLogicError
@@ -8,8 +6,8 @@ from app.interfaces.repository_interfaces import IBookRepository
 from app.schemas.models import Book
 from app.services.book_intelligence import BookIntelligenceService
 
-logger = logging.getLogger(__name__)
-
+# A query that is only part of a remembered title must cover most of it, so
+# "Dune" doesn't match a remembered "Dune Messiah".
 _MIN_QUERY_TITLE_RATIO = 0.6
 
 
@@ -45,7 +43,9 @@ class BookService:
             if book:
                 return book
             if not title:
-                raise BookResolutionError(f"No book found with volume id '{volume_id}'.")
+                raise BookResolutionError(
+                    f"No book found with volume id '{volume_id}'."
+                )
         if title:
             book = await self.resolve_book(title, recent_results=recent_results)
             if book:
@@ -58,75 +58,49 @@ class BookService:
         if existing:
             return existing
         book = await self.search_client.get_volume(volume_id)
-        if book is None:
-            return None
-        logger.info("Storing book fetched by volume id: '%s' (%s)", book.title, volume_id)
-        return await self.repo.create(book)
+        return await self.repo.create(book) if book else None
 
     async def resolve_book(
-        self,
-        title: str,
-        recent_results: list[dict] | None = None,
+        self, title: str, recent_results: list[dict] | None = None
     ) -> Book | None:
+        # Stage 0: a book the user was just shown resolves to that exact volume,
+        # so the edition (and page count) can't change between search and track.
         if recent_results:
             matched = self._match_recent_result(title, recent_results)
             if matched:
                 book = await self._book_from_recent_result(matched)
                 if book:
-                    logger.info(
-                        "Book resolved from recent search results: '%s' (volume %s)",
-                        book.title,
-                        book.google_books_id,
-                    )
                     return book
 
-        existing_book = await self.repo.get_by_title(title)
-        if existing_book:
-            logger.info(f"Book found in database (exact): '{existing_book.title}'")
-            return existing_book
+        existing = await self.repo.get_by_title(title)
+        if existing:
+            return existing
 
-        logger.info(f"Normalizing query: '{title}'")
         normalized = await self.intelligence.normalize_query(title)
-
         search_query = title
         if normalized:
             if not normalized.is_valid_book_query:
-                logger.warning(f"Query '{title}' deemed invalid by LLM. Aborting search.")
                 return None
             search_query = normalized.normalized_query
-            logger.info(f"Query normalized to: '{search_query}'")
-
             if search_query != title:
-                existing_book_norm = await self.repo.get_by_title(search_query)
-                if existing_book_norm:
-                    logger.info(f"Book found in database (normalized): '{existing_book_norm.title}'")
-                    return existing_book_norm
+                existing = await self.repo.get_by_title(search_query)
+                if existing:
+                    return existing
 
-        logger.info(f"Book not in database, searching external catalogue: '{search_query}'")
-
-        google_books = await self.search_client.search_books(search_query, max_results=5)
-        if not google_books:
-            logger.warning(f"No books found for: '{search_query}'")
+        results = await self.search_client.search_books(search_query, max_results=5)
+        if not results:
             return None
 
-        best_book = await self.intelligence.select_best_match(title, google_books)
-        if not best_book:
-            logger.warning(f"LLM could not find a good match for: '{title}'")
+        best = await self.intelligence.select_best_match(title, results)
+        if not best:
             return None
 
-        existing_by_volume_id = await self.repo.get_by_google_volume_id(
-            best_book.google_books_id
-        )
-        if existing_by_volume_id:
-            logger.info(
-                f"Book already exists in database by volume ID: '{existing_by_volume_id.title}'"
-            )
-            return existing_by_volume_id
-
-        logger.info(f"Saving book to database: '{best_book.title}'")
-        saved_book = await self.repo.create(best_book)
-        logger.info(f"Book saved successfully: '{saved_book.title}' (ID: {saved_book.id})")
-        return saved_book
+        # Deduplicate on volume id, not title: differently phrased lookups of
+        # the same book converge on one row.
+        existing = await self.repo.get_by_google_volume_id(best.google_books_id)
+        if existing:
+            return existing
+        return await self.repo.create(best)
 
     @staticmethod
     def _match_recent_result(title: str, recent_results: list[dict]) -> dict | None:
@@ -146,7 +120,8 @@ class BookService:
             return max(contained, key=lambda r: len(shown(r)))
 
         partial = [
-            r for r in recent_results
+            r
+            for r in recent_results
             if shown(r)
             and query in shown(r)
             and len(query) / len(shown(r)) >= _MIN_QUERY_TITLE_RATIO

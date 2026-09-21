@@ -1,5 +1,5 @@
-import logging
 import uuid
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -17,23 +17,17 @@ from app.core.exceptions import DomainException
 from app.schemas.chat import ChatRequest, MessageType
 from app.schemas.models import User
 
-logger = logging.getLogger(__name__)
+SendFn = Callable[[dict], Awaitable[None]]
 
 
 async def process_message(
     body: ChatRequest,
     user: User,
     conn: AsyncConnection,
-    send_fn=None,
+    send_fn: SendFn | None = None,
 ) -> dict:
     session = await _resolve_session(body, user)
     session_id = str(session["id"])
-    logger.info(
-        "chat: session=%s user=%s type=%s",
-        session_id,
-        user.email,
-        body.message_type.value,
-    )
 
     user_input, user_content = _build_user_input(body)
     await add_message(
@@ -42,17 +36,9 @@ async def process_message(
         content=user_content,
         message_type=body.message_type.value,
     )
-
     history = await get_conversation_history(session_id, 30)
 
-    tool_context = {
-        "conn": conn,
-        "user": user,
-        "session_id": session_id,
-        "metadata": parse_metadata(session.get("metadata")),
-    }
-
-    async def stream_callback(element: dict):
+    async def stream_callback(element: dict) -> None:
         if element.get("type") == "text_chunk":
             await send_fn({"type": "text_chunk", "session_id": session_id, **element})
         else:
@@ -62,53 +48,47 @@ async def process_message(
 
     agent = RouterAgent(
         session=session,
-        context=tool_context,
+        context={
+            "conn": conn,
+            "user": user,
+            "session_id": session_id,
+            "metadata": parse_metadata(session.get("metadata")),
+        },
         stream_callback=stream_callback if send_fn else None,
     )
-    result = await agent.run(
-        user_input=user_input,
-        history=history,
-    )
+    result = await agent.run(user_input=user_input, history=history)
 
-    session_updates = result.get("session_updates", {})
-    if session_updates:
-        await update_session(session_id, session_updates)
+    if result["session_updates"]:
+        await update_session(session_id, result["session_updates"])
 
-    response_payload = result.get("response", {})
-    assistant_msg_id = await add_message(
+    response = result["response"]
+    message_id = await add_message(
         session_id=session_id,
         role="assistant",
-        content=_extract_text(response_payload),
+        content=" | ".join(ui.summarize_elements(response["elements"]))[:1000],
         message_type="assistant",
-        ui_payload=response_payload,
+        ui_payload=response,
     )
 
-    response_dict = {
+    reply = {
         "session_id": session_id,
-        "message_id": assistant_msg_id or str(uuid.uuid4()),
-        "response": response_payload,
-        "suggestions": result.get("suggestions", []),
+        "message_id": message_id or str(uuid.uuid4()),
+        "response": response,
+        "suggestions": result["suggestions"],
     }
-
     if send_fn:
-        await send_fn({"type": "done", **response_dict})
-        logger.info("chat: completed session=%s", session_id)
-
-    return response_dict
+        await send_fn({"type": "done", **reply})
+    return reply
 
 
 async def _resolve_session(body: ChatRequest, user: User) -> dict:
-    session = None
-
     if body.session_id:
         session = await load_session(body.session_id)
-        if not (session and str(session.get("user_id")) == str(user.id)):
-            session = None
+        if session and str(session["user_id"]) == str(user.id):
+            return session
 
+    session = await create_session(str(user.id), body.session_name)
     if not session:
-        session = await create_session(str(user.id), body.session_name)
-
-    if not session or not session.get("id"):
         raise DomainException("Failed to create session")
     return session
 
@@ -125,12 +105,3 @@ def _build_user_input(body: ChatRequest) -> tuple[dict, str]:
         "action_data": body.action_data.model_dump() if body.action_data else None,
     }
     return user_input, user_content
-
-
-def _extract_text(response: dict) -> str:
-    if not response:
-        return ""
-    elements = response.get("elements", [])
-    if not elements:
-        return (response.get("content") or "")[:1000]
-    return " | ".join(ui.summarize_elements(elements))[:1000]

@@ -1,22 +1,26 @@
 import logging
+from functools import cache
+
+from langchain_core.language_models import BaseChatModel
 
 from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
-_langchain_llm = None
-
-
-def get_langchain_llm():
-    global _langchain_llm
-    if _langchain_llm is not None:
-        return _langchain_llm
-
-    if settings.azure_openai_endpoint and settings.azure_openai_api_key and settings.azure_openai_deployment:
+@cache
+def get_langchain_llm() -> BaseChatModel | None:
+    if (
+        settings.azure_openai_endpoint
+        and settings.azure_openai_api_key
+        and settings.azure_openai_deployment
+    ):
         from langchain_openai import AzureChatOpenAI
 
-        _langchain_llm = AzureChatOpenAI(
+        logger.info(
+            "LLM: Azure OpenAI (deployment=%s)", settings.azure_openai_deployment
+        )
+        return AzureChatOpenAI(
             openai_api_version=settings.azure_openai_api_version,
             azure_endpoint=settings.azure_openai_endpoint,
             api_key=settings.azure_openai_api_key,
@@ -25,20 +29,17 @@ def get_langchain_llm():
             temperature=settings.llm_temperature,
             streaming=True,
         )
-        logger.info("LangChain LLM: Azure OpenAI (deployment=%s)", settings.azure_openai_deployment)
-        return _langchain_llm
 
     if settings.openai_api_key and settings.openai_api_key.startswith("sk-"):
         from langchain_openai import ChatOpenAI
 
-        _langchain_llm = ChatOpenAI(
+        logger.info("LLM: OpenAI (model=%s)", settings.openai_model)
+        return ChatOpenAI(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             temperature=settings.llm_temperature,
             streaming=True,
         )
-        logger.info("LangChain LLM: OpenAI (model=%s)", settings.openai_model)
-        return _langchain_llm
 
-    logger.warning("No LLM credentials found — router agent will be unavailable")
+    logger.warning("No LLM credentials found; the chat agent will be unavailable")
     return None

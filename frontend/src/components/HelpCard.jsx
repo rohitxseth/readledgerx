@@ -1,13 +1,7 @@
 function HelpCard({ data, onAction }) {
-  if (!data) return null;
-
   const handleAction = (exampleText) => {
-    // Trim the quotes for the actual message payload
     const text = exampleText.replace(/^"|"$/g, "");
-    if (onAction) {
-      // Send as a plain text string message simulating a user saying it
-      onAction(text, { label: text });
-    }
+    onAction(text, { label: text });
   };
 
   return (

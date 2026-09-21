@@ -1,4 +1,4 @@
-import uuid as uuid_module
+from uuid import UUID
 
 from sqlalchemy import case, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -12,10 +12,9 @@ class BookRepository:
     def __init__(self, conn: AsyncConnection):
         self.conn = conn
 
-    async def get_by_id(self, book_id: uuid_module.UUID) -> Book | None:
+    async def get_by_id(self, book_id: UUID) -> Book | None:
         stmt = select(books).where(books.c.id == book_id)
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return BookMapper.from_db(dict(row._mapping)) if row else None
 
     async def get_by_title(self, title: str) -> Book | None:
@@ -37,23 +36,22 @@ class BookRepository:
             )
             .limit(1)
         )
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return BookMapper.from_db(dict(row._mapping)) if row else None
 
     async def get_by_google_volume_id(self, google_volume_id: str) -> Book | None:
         stmt = select(books).where(books.c.google_volume_id == google_volume_id)
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return BookMapper.from_db(dict(row._mapping)) if row else None
 
     async def create(self, book: Book) -> Book:
+        # Google Books dates are "YYYY", "YYYY-MM" or "YYYY-MM-DD"; the table
+        # stores only the year.
         published_year = None
         if book.published_date:
             try:
-                year_str = book.published_date.split("-")[0]
-                published_year = int(year_str)
-            except (ValueError, IndexError):
+                published_year = int(book.published_date.split("-")[0])
+            except ValueError:
                 pass
 
         stmt = (
@@ -73,6 +71,5 @@ class BookRepository:
             )
             .returning(books)
         )
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return BookMapper.from_db(dict(row._mapping))

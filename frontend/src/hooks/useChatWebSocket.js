@@ -18,7 +18,7 @@ export function useChatWebSocket(token, onLogout) {
   const reconnectAttemptRef = useRef(0);
   const timersRef = useRef({ ping: null, reconnect: null });
   const intentionalCloseRef = useRef(false);
-  
+
   // Accumulates streaming content for the current assistant turn
   const streamingRef = useRef({ text: "", elements: [] });
 
@@ -134,7 +134,7 @@ export function useChatWebSocket(token, onLogout) {
             onLogout();
             return;
           }
-          
+
           setMessages((prev) => {
             const updated = [...prev];
             const last = updated[updated.length - 1];
@@ -142,7 +142,7 @@ export function useChatWebSocket(token, onLogout) {
               type: "composite",
               elements: [{ type: "text", content: data.message || "Something went wrong.", style: "error" }],
             };
-            
+
             if (last?.role === "assistant" && last._streaming) {
               updated[updated.length - 1] = {
                 role: "assistant",
@@ -157,19 +157,13 @@ export function useChatWebSocket(token, onLogout) {
           streamingRef.current = { text: "", elements: [] };
           setIsLoading(false);
           break;
-          
-        case "pong":
-          break;
-          
-        default:
-          break;
       }
     };
 
     ws.onclose = () => {
       clearTimers();
       setConnected(false);
-      
+
       if (!intentionalCloseRef.current) {
         const delay = Math.min(
           RECONNECT_BASE_DELAY * 2 ** reconnectAttemptRef.current,
@@ -183,7 +177,7 @@ export function useChatWebSocket(token, onLogout) {
 
   useEffect(() => {
     if (!token) return;
-    
+
     intentionalCloseRef.current = false;
     createSocket();
 
@@ -197,7 +191,7 @@ export function useChatWebSocket(token, onLogout) {
     };
   }, [token, createSocket, clearTimers]);
 
-  const sendMessage = useCallback((msg, sid = sessionId) => {
+  const sendMessage = useCallback((msg) => {
     if (!msg.trim() || isLoading || !connected) return false;
 
     streamingRef.current = { text: "", elements: [] };
@@ -210,14 +204,14 @@ export function useChatWebSocket(token, onLogout) {
 
     sendPayload({
       type: "message",
-      session_id: sid,
+      session_id: sessionId,
       message: msg.trim(),
       message_type: "text",
     });
     return true;
   }, [isLoading, connected, sessionId, sendPayload]);
 
-  const sendAction = useCallback((action, payload, sid = sessionId) => {
+  const sendAction = useCallback((action, payload) => {
     if (isLoading || !connected) return false;
 
     streamingRef.current = { text: "", elements: [] };
@@ -230,7 +224,7 @@ export function useChatWebSocket(token, onLogout) {
 
     sendPayload({
       type: "message",
-      session_id: sid,
+      session_id: sessionId,
       message: "",
       message_type: "action_click",
       action_data: { action, payload },

@@ -5,7 +5,6 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncpg>=0.31.0",
     "bcrypt>=5.0.0",
-    "colorlog>=6.10.1",
     "fastapi>=0.136.3",
     "httpx>=0.28.1",
     "langchain-core>=1.4.1",
@@ -23,10 +22,6 @@ dependencies = [
 
 
 [tool.pytest.ini_options]
-# Lives here rather than in pytest.ini: the old pytest.ini held TOML syntax
-# under [tool.pytest.ini_options], which pytest.ini does not understand, so the
-# whole config — including asyncio_mode — was silently ignored and every async
-# test was skipped.
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
@@ -42,6 +37,5 @@ select = ["E", "F", "I", "UP", "B"]  # pycodestyle, pyflakes, isort, pyupgrade, 
 ignore = ["E501"]  # line-length handled by formatter
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]  # re-exports are intentional
 "app/routers/*" = ["B008"]  # FastAPI Depends()/Query() in defaults is idiomatic
 "app/core/dependencies.py" = ["B008"]

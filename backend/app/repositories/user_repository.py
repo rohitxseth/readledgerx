@@ -1,5 +1,5 @@
-import uuid as uuid_module
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -13,16 +13,14 @@ class UserRepository:
     def __init__(self, conn: AsyncConnection):
         self.conn = conn
 
-    async def get_by_id(self, user_id: uuid_module.UUID) -> User | None:
+    async def get_by_id(self, user_id: UUID) -> User | None:
         stmt = select(users).where(users.c.id == user_id)
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return UserMapper.from_db(dict(row._mapping)) if row else None
 
     async def get_by_email(self, email: str) -> User | None:
         stmt = select(users).where(users.c.email == email)
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return UserMapper.from_db(dict(row._mapping)) if row else None
 
     async def create(self, email: str, hashed_password: str) -> User:
@@ -31,11 +29,10 @@ class UserRepository:
             .values(email=email, password_hash=hashed_password)
             .returning(users)
         )
-        result = await self.conn.execute(stmt)
-        row = result.first()
+        row = (await self.conn.execute(stmt)).first()
         return UserMapper.from_db(dict(row._mapping))
 
-    async def update_last_login(self, user_id: uuid_module.UUID) -> None:
+    async def update_last_login(self, user_id: UUID) -> None:
         stmt = (
             update(users)
             .where(users.c.id == user_id)

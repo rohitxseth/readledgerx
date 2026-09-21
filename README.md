@@ -310,8 +310,8 @@ element tree, and the React `BduiRenderer` switches on `element.type`:
 }
 ```
 
-Element types the backend emits: `text`, `composite`, `book_card`, `book_list`,
-`book_progress`, `action_buttons`, `progress`, `help_card`.
+Element types the backend emits: `text`, `composite`, `book_list`, `book_progress`,
+`action_buttons`, `progress`, `help_card`.
 
 The loop closes on itself: a button carries an `action` and a `payload`, and clicking it
 sends a `message_type: "action_click"` frame back. The agent treats that as just

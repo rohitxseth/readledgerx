@@ -9,16 +9,19 @@ from app.models import chat_messages, chat_sessions
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_SESSION_COLUMNS = frozenset({"metadata", "message_count", "is_active", "name"})
+# Every function here logs and swallows database errors, returning an empty
+# value instead, so a chat turn degrades rather than failing outright. That
+# includes a malformed session id from the client, which load_session treats
+# as "no such session".
 
 
-def parse_metadata(raw) -> dict:
+def parse_metadata(raw: object) -> dict:
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
@@ -26,16 +29,13 @@ def parse_metadata(raw) -> dict:
 
 async def create_session(user_id: str, session_name: str | None = None) -> dict:
     now = datetime.now(UTC)
-    if not session_name:
-        session_name = f"Chat — {now.strftime('%Y-%m-%d %H:%M')}"
-
     try:
         async with async_engine.begin() as conn:
             stmt = (
                 insert(chat_sessions)
                 .values(
                     user_id=user_id,
-                    name=session_name,
+                    name=session_name or f"Chat — {now.strftime('%Y-%m-%d %H:%M')}",
                     metadata="{}",
                     message_count=0,
                     is_active=True,
@@ -44,15 +44,10 @@ async def create_session(user_id: str, session_name: str | None = None) -> dict:
                 )
                 .returning(chat_sessions)
             )
-            result = await conn.execute(stmt)
-            row = result.first()
-            if row:
-                session = dict(row._mapping)
-                logger.info("session: created %s for user=%s", session["id"], user_id)
-                return session
-            return {}
-    except Exception as e:
-        logger.error("Error creating session: %s", e, exc_info=True)
+            row = (await conn.execute(stmt)).first()
+            return dict(row._mapping) if row else {}
+    except Exception:
+        logger.exception("Failed to create chat session")
         return {}
 
 
@@ -64,37 +59,27 @@ async def load_session(session_id: str) -> dict:
                 .where(chat_sessions.c.id == session_id)
                 .where(chat_sessions.c.is_active.is_(True))
             )
-            result = await conn.execute(stmt)
-            row = result.first()
+            row = (await conn.execute(stmt)).first()
             return dict(row._mapping) if row else {}
-    except Exception as e:
-        logger.error("Error loading session: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Failed to load chat session")
         return {}
 
 
-async def update_session(session_id: str, updates: dict) -> bool:
+async def update_session(session_id: str, updates: dict) -> None:
     try:
-        values = {"updated_at": datetime.now(UTC)}
-        for key, value in updates.items():
-            if key not in _ALLOWED_SESSION_COLUMNS:
-                logger.warning("Skipping unknown column in session update: %s", key)
-                continue
-            values[key] = value
-
         stmt = (
             update(chat_sessions)
             .where(chat_sessions.c.id == session_id)
-            .values(**values)
+            .values(updated_at=datetime.now(UTC), **updates)
         )
         async with async_engine.begin() as conn:
             await conn.execute(stmt)
-        return True
-    except Exception as e:
-        logger.error("Error updating session: %s", e, exc_info=True)
-        return False
+    except Exception:
+        logger.exception("Failed to update chat session")
 
 
-async def get_user_sessions(user_id: str, limit: int = 50) -> list:
+async def get_user_sessions(user_id: str, limit: int = 50) -> list[dict]:
     try:
         async with async_engine.begin() as conn:
             stmt = (
@@ -112,8 +97,8 @@ async def get_user_sessions(user_id: str, limit: int = 50) -> list:
             )
             result = await conn.execute(stmt)
             return [dict(row._mapping) for row in result]
-    except Exception as e:
-        logger.error("Error getting user sessions: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Failed to list chat sessions")
         return []
 
 
@@ -124,10 +109,8 @@ async def add_message(
     message_type: str = "text",
     ui_payload: dict | None = None,
 ) -> str:
+    now = datetime.now(UTC)
     try:
-        ui_json = json.dumps(ui_payload) if ui_payload else None
-        now = datetime.now(UTC)
-
         async with async_engine.begin() as conn:
             stmt = (
                 insert(chat_messages)
@@ -136,36 +119,27 @@ async def add_message(
                     role=role,
                     content=content,
                     message_type=message_type,
-                    ui_payload=ui_json,
+                    ui_payload=json.dumps(ui_payload) if ui_payload else None,
                     created_at=now,
                 )
                 .returning(chat_messages.c.id)
             )
-            result = await conn.execute(stmt)
-            row = result.first()
-            message_id = str(row[0]) if row else ""
+            row = (await conn.execute(stmt)).first()
+            if not row:
+                return ""
 
-            if message_id:
-                await conn.execute(
-                    update(chat_sessions)
-                    .where(chat_sessions.c.id == session_id)
-                    .values(
-                        message_count=chat_sessions.c.message_count + 1,
-                        updated_at=now,
-                    )
-                )
-                logger.info(
-                    "session: added %s message %s to session %s",
-                    role, message_id, session_id,
-                )
-            return message_id
-
-    except Exception as e:
-        logger.error("Error adding message: %s", e, exc_info=True)
+            await conn.execute(
+                update(chat_sessions)
+                .where(chat_sessions.c.id == session_id)
+                .values(message_count=chat_sessions.c.message_count + 1, updated_at=now)
+            )
+            return str(row[0])
+    except Exception:
+        logger.exception("Failed to save chat message")
         return ""
 
 
-async def get_conversation_history(session_id: str, limit: int = 50) -> list:
+async def get_conversation_history(session_id: str, limit: int = 50) -> list[dict]:
     try:
         async with async_engine.begin() as conn:
             stmt = (
@@ -175,16 +149,16 @@ async def get_conversation_history(session_id: str, limit: int = 50) -> list:
                 .limit(limit)
             )
             result = await conn.execute(stmt)
-            rows = []
-            for row in result:
-                data = dict(row._mapping)
-                if data.get("ui_payload") and isinstance(data["ui_payload"], str):
-                    try:
-                        data["ui_payload"] = json.loads(data["ui_payload"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                rows.append(data)
-            return rows
-    except Exception as e:
-        logger.error("Error getting conversation history: %s", e, exc_info=True)
+            messages = [dict(row._mapping) for row in result]
+    except Exception:
+        logger.exception("Failed to load chat history")
         return []
+
+    # ui_payload is written with json.dumps, so it can come back as a string.
+    for message in messages:
+        if isinstance(message["ui_payload"], str):
+            try:
+                message["ui_payload"] = json.loads(message["ui_payload"])
+            except json.JSONDecodeError:
+                pass
+    return messages

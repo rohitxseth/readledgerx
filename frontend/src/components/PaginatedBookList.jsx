@@ -2,11 +2,11 @@ import { useState } from "react";
 import BookPreviewCard from "./BookPreviewCard";
 import BookProgressCard from "./BookProgressCard";
 
-function PaginatedBookList({ books, type = "preview" }) {
+function PaginatedBookList({ books }) {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 3;
 
-  if (!books || books.length === 0) return null;
+  if (books.length === 0) return null;
 
   const totalPages = Math.ceil(books.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
@@ -25,7 +25,7 @@ function PaginatedBookList({ books, type = "preview" }) {
       <div className="bdui-paginated-list__items">
         {currentBooks.map((book, idx) => (
           <div key={idx} className="bdui-paginated-list__item">
-            {type === "progress" || book.progress_percentage !== undefined ? (
+            {book.progress_percentage !== undefined ? (
               <BookProgressCard data={book} />
             ) : (
               <BookPreviewCard data={book} />

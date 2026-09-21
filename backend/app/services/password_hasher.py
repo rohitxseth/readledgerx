@@ -1,6 +1,8 @@
-from __future__ import annotations
-
 from typing import Protocol, runtime_checkable
+
+import bcrypt
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
 
 @runtime_checkable
@@ -10,26 +12,18 @@ class IPasswordHasher(Protocol):
 
 
 class BcryptPasswordHasher:
-
     def hash(self, password: str) -> str:
-        import bcrypt
-        salt = bcrypt.gensalt()
-        return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     def verify(self, plain: str, hashed: str) -> bool:
-        import bcrypt
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 class Argon2PasswordHasher:
-
     def hash(self, password: str) -> str:
-        from argon2 import PasswordHasher
         return PasswordHasher().hash(password)
 
     def verify(self, plain: str, hashed: str) -> bool:
-        from argon2 import PasswordHasher
-        from argon2.exceptions import VerifyMismatchError
         try:
             return PasswordHasher().verify(hashed, plain)
         except VerifyMismatchError:

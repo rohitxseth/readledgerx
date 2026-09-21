@@ -1,10 +1,7 @@
-from __future__ import annotations
-
 import re
 
 
 class PageCount:
-
     MAX = 100_000
 
     def __init__(self, value: int) -> None:
@@ -33,7 +30,6 @@ class PageCount:
 
 
 class Email:
-
     _PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
     def __init__(self, value: str) -> None:

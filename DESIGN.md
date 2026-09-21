@@ -115,7 +115,8 @@ class UserMapper:
         return User(
             id=row["id"],
             email=row["email"],
-            hashed_password=row.get("hashed_password") or row.get("password_hash"),
+            created_at=row["created_at"],
+            hashed_password=row["password_hash"],
         )
 ```
 
@@ -123,8 +124,8 @@ The key benefit: if a DB column is renamed, you change the mapper — nothing el
 domain model doesn't know about DB column names, and the repository doesn't know how to
 construct domain objects.
 
-That `or` is the pattern doing real work: the database column is `password_hash`, the
-domain field is `hashed_password`, and exactly one file knows that. The same applies to
+That last line is the pattern doing real work: the database column is `password_hash`,
+the domain field is `hashed_password`, and the mapper is where that translation lives. The same applies to
 `reading_sessions`, where the columns are `pages` and `read_on` but the domain speaks in
 `pages_read` and `session_date`.
 

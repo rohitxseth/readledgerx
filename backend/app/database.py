@@ -1,19 +1,14 @@
-from sqlalchemy.ext.asyncio import create_async_engine
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from app.config.settings import settings
 
-DATABASE_URL = settings.database_url
-
-kwargs = {"echo": False, "pool_pre_ping": True}
-if not DATABASE_URL.startswith("sqlite"):
-    kwargs.update({
-        "pool_size": 10,
-        "max_overflow": 20,
-    })
-
-async_engine = create_async_engine(DATABASE_URL, **kwargs)
+async_engine = create_async_engine(
+    settings.database_url, pool_pre_ping=True, pool_size=10, max_overflow=20
+)
 
 
-async def get_db():
+async def get_db() -> AsyncIterator[AsyncConnection]:
     async with async_engine.begin() as conn:
         yield conn
