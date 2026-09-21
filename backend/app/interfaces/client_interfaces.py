@@ -1,22 +1,3 @@
-"""
-External client interfaces (Protocols) for the ReadLedger domain.
-
-WHY ABSTRACT THE EXTERNAL CLIENT?
-----------------------------------
-`GoogleBooksClient` makes real HTTP calls. If `BookService` directly
-instantiates it, you cannot test `BookService` without hitting the network.
-
-By depending on `IBookSearchClient`, we can:
-  - Pass a `FakeBookSearchClient` in tests (no HTTP required)
-  - Swap Google Books for OpenLibrary or any other API without changing
-    `BookService` at all                                            → OCP
-
-INTERVIEW TALKING POINT:
-  "External I/O — HTTP, databases, file systems — are the hardest things to
-   test. I wrap every external dependency behind a Protocol so my domain
-   services stay pure and fast to test."
-"""
-
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable

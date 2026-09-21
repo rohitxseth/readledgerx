@@ -5,6 +5,13 @@ no inheritance from the production classes. That's the whole point of
 using Protocol instead of ABC.
 """
 
+import os
+
+# Settings refuses to start without a real JWT_SECRET_KEY (see app/config/settings.py).
+# Tests must not depend on a developer's .env, so supply a throwaway value here —
+# before any app module is imported. It is never used to sign anything real.
+os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-not-used-in-production-0123456789")
+
 import uuid
 from datetime import datetime, timezone
 from app.schemas.models import Book, User, ReadingSession, BookProgress

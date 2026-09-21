@@ -47,7 +47,7 @@ Open `backend/.env` and set, at minimum:
 
 | Variable | Why it matters |
 |----------|----------------|
-| `JWT_SECRET_KEY` | **Required.** Without it the app falls back to a hardcoded default and anyone can forge a login token. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `JWT_SECRET_KEY` | **Required — the app refuses to start without it.** Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Placeholder and short values are rejected at startup rather than silently accepted. |
 | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` | Without these, chat replies *"AI service is not configured"*. All three are needed together. |
 
 `GOOGLE_BOOKS_API_KEY` is optional — search works unauthenticated at low volume.

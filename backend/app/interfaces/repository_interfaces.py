@@ -1,25 +1,3 @@
-"""
-Repository interfaces (Protocols) for the ReadLedger domain.
-
-WHY PROTOCOLS?
---------------
-Python's `typing.Protocol` enables structural subtyping (duck typing with type
-safety). Concrete repository classes don't need to inherit from these — they
-just need to implement the same methods. This means:
-
-  1. Services depend on *abstractions*, not concrete DB classes  → DIP
-  2. Swapping implementations (e.g., in-memory for tests) requires zero
-     changes to service code                                     → OCP
-  3. We can write focused unit tests by passing a mock that satisfies
-     the protocol, without touching the database                 → Testability
-
-INTERVIEW TALKING POINT:
-  "I used Protocol instead of ABC because it avoids the inheritance coupling of
-   abstract base classes. A `FakeUserRepository` in tests can satisfy
-   `IUserRepository` just by having the right method signatures — no import of
-   the production module required."
-"""
-
 from __future__ import annotations
 
 import uuid as uuid_module

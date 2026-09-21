@@ -1,10 +1,3 @@
-"""
-Tests for BookService.resolve_book() — the most interview-worthy flow in the codebase.
-
-The key thing being tested here: BookService never knows about the DB or HTTP.
-It only talks to IBookRepository and IBookSearchClient. We pass fakes.
-"""
-
 import uuid
 import pytest
 
