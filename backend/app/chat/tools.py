@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from app.chat import ui
 from app.core.dependencies import get_book_service, get_reading_service
@@ -33,7 +34,12 @@ SEARCH_BOOKS_DEF = {
     "type": "function",
     "function": {
         "name": "search_books",
-        "description": "Search for books by title, author name, or general query.",
+        "description": (
+            "Search for a specific author, title, genre or topic the user named. "
+            "Not for recommendations: when the user asks what to read or for a "
+            "suggestion, do not invent a query such as 'fiction', 'bestsellers' "
+            "or 'recommended' — recommendations are not supported."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -109,6 +115,28 @@ START_TRACKING_DEF = {
 }
 
 TOOL_DEFINITIONS = [LOG_READING_DEF, SEARCH_BOOKS_DEF, SHOW_PROGRESS_DEF, START_TRACKING_DEF]
+
+
+# Words with no searchable meaning on their own. A query made only of these is
+# the model inventing a search for a request it can't serve — usually a
+# recommendation — rather than a user naming something. Genres ("fiction",
+# "sci-fi") are deliberately absent: they are real searches.
+_NON_SPECIFIC_TERMS = frozenset({
+    "recommend", "recommended", "recommendation", "recommendations", "recs",
+    "suggest", "suggested", "suggestion", "suggestions",
+    "good", "great", "best", "top", "popular", "trending", "famous", "interesting",
+    "fun", "new", "next", "must-read", "must-reads",
+    "bestseller", "bestsellers", "best-seller", "best-sellers",
+    "book", "books", "novel", "novels", "read", "reads", "reading",
+    "something", "anything", "stuff",
+    "a", "an", "the", "some", "any", "to", "for", "of", "me", "my", "i", "you",
+    "what", "should", "please",
+})
+
+
+def _is_non_specific_query(query: str) -> bool:
+    """True when *query* names nothing: every word is filler."""
+    return all(t in _NON_SPECIFIC_TERMS for t in re.findall(r"[\w'-]+", query.lower()))
 
 
 # How many shown results to remember for the next turn.
@@ -301,6 +329,16 @@ async def execute_search_books(args: dict, context: dict) -> dict:
 
     if not query:
         return {"elements": [ui.text("Please provide a search term.", style="warning")], "suggestions": ["Help"], "metadata_updates": {}}
+
+    # Backstop for recommendation requests the router's intercept didn't catch.
+    # Searching Google Books for "recommended" returns medical guidelines.
+    if _is_non_specific_query(query):
+        logger.info("search_books: declined non-specific query %r", query)
+        return {
+            "elements": ui.recommendation_decline(),
+            "suggestions": ui.SEARCH_EXAMPLES,
+            "metadata_updates": {},
+        }
 
     book_service = get_book_service(conn)
     books = await book_service.search_client.search_books(query, search_by)

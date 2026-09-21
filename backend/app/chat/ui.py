@@ -88,6 +88,35 @@ def help_card() -> dict:
     }
 
 
+# Example queries offered wherever the bot points users at search. They are
+# phrased so that tapping one as a suggestion chip runs a real search.
+SEARCH_EXAMPLES = ["Sci-fi books", "Books by Ayn Rand", "Books about stoicism"]
+
+
+def recommendation_decline() -> list:
+    """Elements for a request the bot can't serve yet: "what should I read?".
+
+    Returned instead of guessing. Handing a recommendation request to search
+    produces an invented query ("fiction", "bestsellers") and irrelevant books.
+    """
+    return [
+        text(
+            "I can't recommend books yet — that isn't supported. "
+            "Here's what I can do instead:\n\n"
+            "- **Search by author** — *books by Ayn Rand*\n"
+            "- **Search by genre** — *sci-fi books*\n"
+            "- **Search by topic** — *books about stoicism*\n"
+            "- **Track a book you already have in mind** — *start tracking Dune*",
+            style="info",
+        ),
+        action_buttons([
+            button("Search by genre", "search_prompt", "secondary", {"by": "genre"}),
+            button("Search by author", "search_prompt", "secondary", {"by": "author"}),
+            button("Search by topic", "search_prompt", "secondary", {"by": "topic"}),
+        ]),
+    ]
+
+
 def single_book_progress(message: str, progress_data: dict) -> list:
     elements = [text(message)]
     if progress_data:

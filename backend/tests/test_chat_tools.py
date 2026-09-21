@@ -6,9 +6,13 @@ survive into the next turn, and action buttons have to name the volume they
 refer to rather than just its title.
 """
 
+import pytest
+
+from app.chat import tools
 from app.chat.tools import (
     _book_ref,
     _compact_search_results,
+    _is_non_specific_query,
     _preferred_volume_id,
     _recent_results,
 )
@@ -145,3 +149,73 @@ def test_button_payload_feeds_preferred_volume_id():
     book = make_book(title="Dune", google_books_id="vol_dune")
     clicked = {"action_data": {"action": "log_reading", "payload": _book_ref(book)}}
     assert _preferred_volume_id(clicked) == "vol_dune"
+
+
+# ---------------------------------------------------------------------------
+# search_books guard — the backstop behind the router's recommendation intercept
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("query", [
+    "recommended",            # the literal query the agent was seen sending
+    "bestsellers",            # what it sent for "any good books?"
+    "good books",
+    "something to read",
+    "Best Books",
+    "recommended books for me",
+])
+def test_filler_only_queries_are_non_specific(query):
+    assert _is_non_specific_query(query)
+
+
+@pytest.mark.parametrize("query", [
+    "sci-fi",
+    "fiction",                # a genre is a real search, even though the agent
+    "science fiction",        # also invents it for recommendations
+    "Ayn Rand",
+    "stoicism",
+    "best sci-fi books",      # one real word is enough
+    "harry potter",
+    "books recommended by Bill Gates",
+])
+def test_queries_that_name_something_are_specific(query):
+    assert not _is_non_specific_query(query)
+
+
+def _patch_search(monkeypatch, results):
+    """Route execute_search_books at a fake client via the composition root."""
+    client = FakeSearchClient(results=results)
+    service = BookService(
+        repo=FakeBookRepository(), search_client=client, intelligence=_NoOpIntelligence()
+    )
+    monkeypatch.setattr(tools, "get_book_service", lambda conn: service)
+    return client
+
+
+async def test_non_specific_search_declines_without_hitting_the_catalogue(monkeypatch):
+    client = _patch_search(monkeypatch, results=[make_book(title="WHO Guidelines")])
+
+    result = await tools.execute_search_books({"query": "recommended"}, {"conn": None})
+
+    assert client.last_query is None  # Google Books never called
+    assert [el["type"] for el in result["elements"]] == ["text", "action_buttons"]
+    assert "can't recommend" in result["elements"][0]["content"]
+    assert result["metadata_updates"] == {}  # nothing remembered as "shown"
+
+
+@pytest.mark.parametrize("query, search_by", [
+    ("sci-fi", None),
+    ("Ayn Rand", "author"),
+    ("stoicism", None),
+])
+async def test_genuine_searches_still_return_results(monkeypatch, query, search_by):
+    found = make_book(title="A Real Result")
+    client = _patch_search(monkeypatch, results=[found])
+
+    result = await tools.execute_search_books(
+        {"query": query, "search_by": search_by}, {"conn": None}
+    )
+
+    assert client.last_query == query
+    book_lists = [el for el in result["elements"] if el["type"] == "book_list"]
+    assert book_lists and book_lists[0]["books"][0]["title"] == "A Real Result"
+    assert result["metadata_updates"]["recent_search_results"]

@@ -267,7 +267,32 @@ stay within one round-trip — and it keeps the model from arithmetic it is bad 
 
 `"help"` and its variants are intercepted before the LLM is called at all and answered
 with a fixed help card. A known question with a fixed answer should not cost a network
-round-trip or risk a rephrasing.
+round-trip or risk a rephrasing. Intercepts run before the check for LLM credentials,
+so fixed replies keep working even when no model is configured.
+
+**Recommendation requests are intercepted the same way, and the reason is specific.**
+The app can't recommend books, and handing *"suggest a book"* to the agent does not
+fail cleanly — the model launders it into a plausible search. Observed: *"suggest a
+book"* became `search_books("fiction")` (magazines, a library catalogue), and *"any good
+books?"* became `search_books("bestsellers")` (books *about* bestsellers).
+
+That laundering is why the decline has to happen before the LLM. Once the request is
+`search_books("fiction")`, it is indistinguishable from a user who asked for fiction —
+the only signal that separates them is the user's own words. So the router matches the
+*request form* ("recommend a…", "what should I read", "any good books") rather than
+bare words, which keeps topic searches like *"books about recommendation systems"*
+reaching the agent. The decline's "Search by genre/author/topic" buttons are answered
+deterministically too: left to the model, "Search by genre" sometimes replied that
+genre search wasn't supported, because `search_by` only enumerates `title|author`.
+
+Two weaker layers sit behind it, because a regex will always miss some phrasing:
+
+- `search_books` rejects queries made entirely of filler words (*"recommended"*,
+  *"good books"*) and returns the same decline. It cannot catch `"fiction"`, a real
+  genre — which is exactly why it is the backstop and not the fix.
+- The system prompt and the `search_books` description tell the model not to invent
+  queries for recommendations. A prompt is the least reliable of the three, so it is
+  the last line rather than the first.
 
 The same instinct shapes the retry policy: two attempts with a short backoff, then a
 plain error element. An LLM call is treated as what it is — an unreliable network

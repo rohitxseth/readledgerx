@@ -10,6 +10,7 @@ The agent:
 import asyncio
 import json
 import logging
+import re
 from typing import Awaitable, Callable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -37,6 +38,93 @@ _TOOL_SUGGESTIONS = {
     "show_progress": ["Log pages", "Search books", "Help"],
 }
 
+_HELP_PHRASES = frozenset({"help", "help me", "what can you do", "commands", "options"})
+
+# Requests for a recommendation. The app can't recommend, and passing these to
+# the LLM makes it invent a search query ("fiction", "bestsellers") and return
+# irrelevant books. Patterns match the *request*, not the bare word, so topic
+# searches like "books about recommendation systems" still reach the agent.
+_RECOMMENDATION_RX = re.compile("|".join(f"(?:{p})" for p in (
+    r"^(?:please\s+)?(?:recommend|suggest)\b",
+    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:recommend|suggest)\b",
+    r"\bwhat\s+(?:do|would)\s+you\s+(?:recommend|suggest)\b",
+    r"^(?:any\s+|some\s+)?(?:book\s+|reading\s+)?(?:recommendations?|suggestions?|recs)\b",
+    r"\b(?:any|some|a|your|book|reading)\s+(?:book\s+|reading\s+)?(?:recommendations?|suggestions?|recs)\b",
+    r"\bwhat\s+(?:book\s+|books\s+)?(?:should|shall|could|can)\s+i\s+read\b",
+    r"\bwhat\s+to\s+read\b",
+    r"\b(?:something|anything)\s+(?:good\s+|new\s+|fun\s+|interesting\s+)?to\s+read\b",
+    r"\bany\s+(?:good|great|decent)\s+(?:books?|novels?|reads?)\b",
+)))
+
+# Replies to the decline's "Search by …" buttons. Answered here rather than by
+# the LLM, which reads search_by's title|author enum literally and can tell the
+# user that genre search is unsupported — contradicting the decline.
+_SEARCH_PROMPTS = {
+    "author": ("Which author? Type it like **books by Ayn Rand**.",
+               ["Books by Ayn Rand", "Books by Brandon Sanderson"]),
+    "genre": ("Which genre? Type it like **sci-fi books** or **fantasy books**.",
+              ["Sci-fi books", "Fantasy books"]),
+    "topic": ("What topic? Type it like **books about stoicism**.",
+              ["Books about stoicism", "Books about habits"]),
+}
+_DEFAULT_SEARCH_PROMPT = (
+    "What would you like to search for? An author, a genre or a topic all work.",
+    ui.SEARCH_EXAMPLES,
+)
+
+
+# The words the patterns above key on. Misspellings of these ("recomment",
+# "reccomend", "sugest") are folded back before matching, so a typo gets the
+# same fixed reply as the correct spelling instead of falling through to the
+# LLM, which can only answer in plain text.
+_INTENT_WORDS = (
+    "recommend", "recommends", "recommended", "recommendation", "recommendations",
+    "suggest", "suggests", "suggested", "suggestion", "suggestions",
+)
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Optimal string alignment distance: an adjacent swap counts as one edit."""
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+def _correct_intent_typo(word: str) -> str:
+    """Return the intent word *word* is a misspelling of, or *word* unchanged.
+
+    Deliberately conservative. The first letter must match and short words get
+    one edit, long words two — otherwise "biggest" is two edits from "suggest",
+    and "biggest book on my shelf?" would be declined as a recommendation.
+    """
+    if word in _INTENT_WORDS or len(word) < 5:
+        return word
+    best, best_distance = word, None
+    for target in _INTENT_WORDS:
+        limit = 1 if len(target) <= 7 else 2
+        if word[0] != target[0] or abs(len(word) - len(target)) > limit:
+            continue
+        distance = _edit_distance(word, target)
+        if distance <= limit and (best_distance is None or distance < best_distance):
+            best, best_distance = target, distance
+    return best
+
+
+def _is_recommendation_request(message: str) -> bool:
+    normalized = re.sub(
+        r"[a-z]+",
+        lambda m: _correct_intent_typo(m.group(0)),
+        (message or "").strip().lower(),
+    )
+    return bool(_RECOMMENDATION_RX.search(normalized))
+
+
 _LLM_MAX_RETRIES = 2
 _LLM_RETRY_DELAY_S = 1.0
 _MAX_HISTORY_TURNS = 20
@@ -62,18 +150,14 @@ class RouterAgent:
         """Run one agent turn and return response, updates, and suggestions."""
         logger.info("agent.run: session=%s", self.session_id)
 
+        # Fixed replies come first: they cost nothing, can't drift, and work
+        # even when no LLM is configured.
+        intercepted = self._intercept(user_input)
+        if intercepted is not None:
+            return intercepted
+
         if self.llm is None:
             return self._error_result("AI service is not configured. Please set up Azure OpenAI or OpenAI credentials.")
-
-        # Intercept deterministic requests
-        msg_text = user_input.get("message", "").strip().lower()
-        if msg_text in ("help", "help me", "what can you do", "commands", "options"):
-            logger.info("agent.run: Deterministic help intercept triggered")
-            return {
-                "response": ui.composite([ui.help_card()]),
-                "session_updates": {},
-                "suggestions": ["Search books", "Show my progress"]
-            }
 
         messages = self._build_messages(history, user_input)
 
@@ -119,6 +203,34 @@ class RouterAgent:
                     logger.error("agent.run: LLM failed completely: %s", exc, exc_info=True)
 
         return self._error_result("I'm having trouble processing your request. Please try again.")
+
+    def _intercept(self, user_input: dict) -> Optional[dict]:
+        """Answer requests that have a fixed reply, without calling the LLM."""
+        if user_input.get("message_type") == "action_click":
+            action_data = user_input.get("action_data") or {}
+            if action_data.get("action") != "search_prompt":
+                return None
+            by = (action_data.get("payload") or {}).get("by")
+            prompt, suggestions = _SEARCH_PROMPTS.get(by, _DEFAULT_SEARCH_PROMPT)
+            logger.info("agent.run: search prompt intercept (by=%s)", by)
+            return self._fixed_result([ui.text(prompt)], suggestions)
+
+        message = (user_input.get("message") or "").strip().lower()
+        if message in _HELP_PHRASES:
+            logger.info("agent.run: help intercept")
+            return self._fixed_result([ui.help_card()], ["Search books", "Show my progress"])
+        if _is_recommendation_request(message):
+            logger.info("agent.run: recommendation intercept")
+            return self._fixed_result(ui.recommendation_decline(), ui.SEARCH_EXAMPLES)
+        return None
+
+    @staticmethod
+    def _fixed_result(elements: list[dict], suggestions: list[str]) -> dict:
+        return {
+            "response": ui.composite(elements),
+            "session_updates": {},
+            "suggestions": suggestions,
+        }
 
     async def _handle_tool_calls(self, tool_calls: list[dict], user_input: dict, llm_text: str = "") -> dict:
         all_elements: list[dict] = []

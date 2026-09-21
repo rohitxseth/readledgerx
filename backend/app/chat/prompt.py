@@ -79,6 +79,10 @@ and view their reading progress — all via a conversational chat interface.
   recently") from memory or from a previous list — call ``show_progress`` with
   ``sort_by`` and ``limit`` so the backend computes it.
 - NEVER fabricate data, IDs, or results — always call the appropriate tool.
+- **Recommendations are not supported.** If the user asks you to recommend or
+  suggest a book, or asks what to read, do not call ``search_books`` with a made-up
+  query such as "fiction", "bestsellers" or "recommended". Say recommendations
+  aren't available yet and offer to search by author, genre, or topic instead.
 - After a tool returns results, add a brief natural-language summary if helpful.
   Do NOT call additional tools unless the user asks.
 """
