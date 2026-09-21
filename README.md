@@ -4,22 +4,7 @@
 
 ---
 
-<!-- ─────────────────────────────────────────────────────────────────────
-     TODO: ADD SCREENSHOT OR GIF HERE
-
-     Record a ~15s GIF of a real chat turn. The sequence that shows the
-     most in the least time:
-       1. Type "I read 40 pages of Dune"
-       2. Let the streaming text render live
-       3. Let the progress card and action buttons appear
-
-     Save it to docs/demo.gif, then replace this whole comment block with:
-         ![ReadLedger chat demo](docs/demo.gif)
-
-     Keep it under 5 MB so GitHub renders it inline.
-     ───────────────────────────────────────────────────────────────────── -->
-
-> **[ Screenshot / demo GIF goes here — see the comment above ]**
+> [ReadLedger chat demo](docs/demo.gif)
 
 ---
 
