@@ -128,6 +128,7 @@ function ChatPage({ onLogout }) {
                       key={i}
                       element={el}
                       onAction={sendAction}
+                      onSend={handleSend}
                     />
                   ))}
 
@@ -135,6 +136,7 @@ function ChatPage({ onLogout }) {
                   <BduiRenderer
                     element={msg.response}
                     onAction={sendAction}
+                    onSend={handleSend}
                   />
                 )}
 

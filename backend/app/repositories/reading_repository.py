@@ -5,7 +5,6 @@ from sqlalchemy import Select, delete, desc, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.domain.mappers import BookProgressMapper, ReadingSessionMapper
-from app.domain.value_objects import PageCount
 from app.models import books, reading_sessions
 from app.schemas.models import BookProgress, ReadingSession
 
@@ -47,7 +46,6 @@ class ReadingRepository:
         pages_read: int,
         session_date: date | None = None,
     ) -> ReadingSession:
-        PageCount(pages_read)
         session_date = session_date or datetime.now(UTC)
         if isinstance(session_date, datetime):
             session_date = session_date.date()

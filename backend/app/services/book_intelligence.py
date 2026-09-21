@@ -1,10 +1,10 @@
 import logging
 import warnings
 
+from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
-from app.config.llm_config import get_langchain_llm
-from app.schemas.models import Book
+from app.schemas.models import Book, NormalizedQuery
 
 # LangChain's structured output trips a spurious pydantic serializer warning
 # on every call.
@@ -31,17 +31,6 @@ _SELECT_PROMPT = (
 )
 
 
-class NormalizedQuery(BaseModel):
-    normalized_query: str = Field(
-        description="The formal, normalized book title and author extracted from the query. "
-        "E.g., 'harry potter 1' -> 'Harry Potter and the Sorcerer\\'s Stone'. "
-        "If the query is already formal, leave it as is."
-    )
-    is_valid_book_query: bool = Field(
-        description="True if the user's query seems to be requesting a book, False if it's completely unrelated."
-    )
-
-
 class BestMatchSelection(BaseModel):
     selected_index: int = Field(
         description="The 0-based index of the best matching book from the provided list. "
@@ -50,8 +39,8 @@ class BestMatchSelection(BaseModel):
 
 
 class BookIntelligenceService:
-    def __init__(self):
-        self.llm = get_langchain_llm()
+    def __init__(self, llm: BaseChatModel | None):
+        self.llm = llm
 
     async def normalize_query(self, raw_query: str) -> NormalizedQuery | None:
         if not self.llm:

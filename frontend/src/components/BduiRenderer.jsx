@@ -3,7 +3,7 @@ import PaginatedBookList from "./PaginatedBookList";
 import HelpCard from "./HelpCard";
 import ErrorBoundary from "./ErrorBoundary";
 
-function BduiRenderer({ element, onAction }) {
+function BduiRenderer({ element, onAction, onSend }) {
   if (!element || !element.type) return null;
 
   switch (element.type) {
@@ -12,7 +12,7 @@ function BduiRenderer({ element, onAction }) {
         <div className="bdui-composite">
           {(element.elements || []).map((child, i) => (
             <ErrorBoundary key={i}>
-              <BduiRenderer element={child} onAction={onAction} />
+              <BduiRenderer element={child} onAction={onAction} onSend={onSend} />
             </ErrorBoundary>
           ))}
         </div>
@@ -34,7 +34,7 @@ function BduiRenderer({ element, onAction }) {
       return <PaginatedBookList books={element.books || []} />;
 
     case "help_card":
-      return <HelpCard data={element} onAction={onAction} />;
+      return <HelpCard data={element} onSend={onSend} />;
 
     case "action_buttons":
       return (

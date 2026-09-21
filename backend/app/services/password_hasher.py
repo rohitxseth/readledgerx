@@ -1,8 +1,6 @@
 from typing import Protocol, runtime_checkable
 
 import bcrypt
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
 
 
 @runtime_checkable
@@ -17,14 +15,3 @@ class BcryptPasswordHasher:
 
     def verify(self, plain: str, hashed: str) -> bool:
         return bcrypt.checkpw(plain.encode(), hashed.encode())
-
-
-class Argon2PasswordHasher:
-    def hash(self, password: str) -> str:
-        return PasswordHasher().hash(password)
-
-    def verify(self, plain: str, hashed: str) -> bool:
-        try:
-            return PasswordHasher().verify(hashed, plain)
-        except VerifyMismatchError:
-            return False

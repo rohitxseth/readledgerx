@@ -36,6 +36,14 @@ def composite(elements: list[dict]) -> dict:
     return {"type": "composite", "elements": elements}
 
 
+def error_frame(message: str) -> dict:
+    return {
+        "type": "error",
+        "message": message,
+        "element": composite([text(message, style="error")]),
+    }
+
+
 def help_card() -> dict:
     return {
         "type": "help_card",
@@ -100,13 +108,12 @@ def single_book_progress(message: str, progress_data: dict) -> list[dict]:
     return [text(message), book_progress_card(progress_data)]
 
 
-def summarize_elements(elements: list[dict], include_text: bool = True) -> list[str]:
+def summarize_elements(elements: list[dict]) -> list[str]:
     parts = []
     for element in elements:
         kind = element.get("type", "")
         if kind == "text":
-            if include_text:
-                parts.append(element.get("content", ""))
+            parts.append(element.get("content", ""))
         elif kind == "action_buttons":
             labels = [b.get("label", "") for b in element.get("buttons", [])]
             if labels:

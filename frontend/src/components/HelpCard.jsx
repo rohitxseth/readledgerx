@@ -1,8 +1,6 @@
-function HelpCard({ data, onAction }) {
-  const handleAction = (exampleText) => {
-    const text = exampleText.replace(/^"|"$/g, "");
-    onAction(text, { label: text });
-  };
+function HelpCard({ data, onSend }) {
+  // Examples are sent exactly as if the user had typed them.
+  const sendExample = (example) => onSend(example.replace(/^"|"$/g, ""));
 
   return (
     <div className="bdui-help-card">
@@ -19,7 +17,7 @@ function HelpCard({ data, onAction }) {
             <p className="bdui-help-feature__desc">{feature.description}</p>
             <div
               className="bdui-help-feature__example"
-              onClick={() => handleAction(feature.example)}
+              onClick={() => sendExample(feature.example)}
               title="Click to try this command!"
             >
               <span className="bdui-help-feature__example-label">Try:</span>

@@ -1,16 +1,12 @@
 """
-Tests for AuthService, BcryptPasswordHasher, Argon2PasswordHasher, and TokenService.
+Tests for AuthService, BcryptPasswordHasher, and TokenService.
 
 These are all pure unit tests — no DB, no HTTP.
 """
 
 
 from app.services.auth_service import AuthService
-from app.services.password_hasher import (
-    Argon2PasswordHasher,
-    BcryptPasswordHasher,
-    IPasswordHasher,
-)
+from app.services.password_hasher import BcryptPasswordHasher, IPasswordHasher
 from app.services.token_service import TokenService
 
 # ---------------------------------------------------------------------------
@@ -19,10 +15,6 @@ from app.services.token_service import TokenService
 
 def test_bcrypt_satisfies_protocol():
     assert isinstance(BcryptPasswordHasher(), IPasswordHasher)
-
-
-def test_argon2_satisfies_protocol():
-    assert isinstance(Argon2PasswordHasher(), IPasswordHasher)
 
 
 # ---------------------------------------------------------------------------
@@ -52,22 +44,6 @@ def test_bcrypt_two_hashes_of_same_password_differ():
     # bcrypt salts every hash — same plaintext produces different ciphertext
     h = BcryptPasswordHasher()
     assert h.hash("password") != h.hash("password")
-
-
-# ---------------------------------------------------------------------------
-# Argon2PasswordHasher
-# ---------------------------------------------------------------------------
-
-def test_argon2_hash_and_verify():
-    h = Argon2PasswordHasher()
-    hashed = h.hash("s3cr3t")
-    assert h.verify("s3cr3t", hashed) is True
-
-
-def test_argon2_verify_wrong_password():
-    h = Argon2PasswordHasher()
-    hashed = h.hash("s3cr3t")
-    assert h.verify("not-the-password", hashed) is False
 
 
 # ---------------------------------------------------------------------------

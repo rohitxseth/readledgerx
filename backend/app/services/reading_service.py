@@ -7,7 +7,6 @@ from app.core.exceptions import (
     EntityNotFoundError,
     ReadingLimitError,
 )
-from app.domain.value_objects import PageCount
 from app.interfaces.repository_interfaces import IBookRepository, IReadingRepository
 from app.schemas.models import (
     Book,
@@ -20,6 +19,8 @@ from app.schemas.models import (
     TrackingResult,
     UndoResult,
 )
+
+_MAX_PAGES = 100_000
 
 
 class ReadingService:
@@ -43,6 +44,7 @@ class ReadingService:
         pages_read: int,
         session_date: date | None = None,
     ) -> ReadingSession:
+        self._validate_pages(pages_read)
         if pages_read > 0:
             book = await self.book_repo.get_by_id(book_id)
             if book and book.page_count > 0:
@@ -119,7 +121,6 @@ class ReadingService:
         self, user_id: UUID, book_id: UUID, pages: int = 0
     ) -> TrackingResult:
         book = await self._require_book(book_id)
-        self._validate_pages(pages)
         existing = await self.reading_repo.get_book_progress(user_id, book_id)
 
         if existing and pages == 0:
@@ -198,10 +199,15 @@ class ReadingService:
 
     @staticmethod
     def _validate_pages(pages: int) -> None:
-        try:
-            PageCount(pages)
-        except (TypeError, ValueError) as e:
-            raise BusinessLogicError(str(e)) from e
+        # Page counts can come straight from the LLM's tool arguments.
+        if not isinstance(pages, int):
+            raise BusinessLogicError("The number of pages must be a whole number.")
+        if pages < 0:
+            raise BusinessLogicError("The number of pages can't be negative.")
+        if pages > _MAX_PAGES:
+            raise BusinessLogicError(
+                f"The number of pages can't be more than {_MAX_PAGES:,}."
+            )
 
     @classmethod
     def _amount(

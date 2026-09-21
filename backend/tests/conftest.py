@@ -174,6 +174,42 @@ class FakeReadingRepository:
         return before - len(self._sessions)
 
 
+class FakeUserRepository:
+    """In-memory users keyed by email. Satisfies IUserRepository structurally."""
+
+    def __init__(self, users: list[User] | None = None):
+        self.users = {u.email: u for u in users or []}
+
+    async def get_by_id(self, user_id):
+        return next((u for u in self.users.values() if u.id == user_id), None)
+
+    async def get_by_email(self, email):
+        return self.users.get(email)
+
+    async def create(self, email, hashed_password):
+        user = User(
+            id=uuid.uuid4(),
+            email=email,
+            created_at=datetime.now(UTC),
+            hashed_password=hashed_password,
+        )
+        self.users[email] = user
+        return user
+
+    async def update_last_login(self, user_id):
+        pass
+
+
+class FakeAuditRepository:
+    """Records audit rows in a list. Satisfies IAuditRepository structurally."""
+
+    def __init__(self):
+        self.records: list[tuple] = []
+
+    async def record(self, user_id, action, details):
+        self.records.append((user_id, action, details))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

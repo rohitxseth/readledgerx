@@ -1,10 +1,9 @@
 from pydantic import ValidationError
 
 from app.core.exceptions import BookResolutionError, BusinessLogicError
-from app.interfaces.client_interfaces import IBookSearchClient
+from app.interfaces.client_interfaces import IBookIntelligence, IBookSearchClient
 from app.interfaces.repository_interfaces import IBookRepository
 from app.schemas.models import Book
-from app.services.book_intelligence import BookIntelligenceService
 
 # A query that is only part of a remembered title must cover most of it, so
 # "Dune" doesn't match a remembered "Dune Messiah".
@@ -16,7 +15,7 @@ class BookService:
         self,
         repo: IBookRepository,
         search_client: IBookSearchClient,
-        intelligence: BookIntelligenceService,
+        intelligence: IBookIntelligence,
     ):
         self.repo = repo
         self.search_client = search_client

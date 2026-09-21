@@ -138,19 +138,14 @@ export function useChatWebSocket(token, onLogout) {
           setMessages((prev) => {
             const updated = [...prev];
             const last = updated[updated.length - 1];
-            const errPayload = {
-              type: "composite",
-              elements: [{ type: "text", content: data.message || "Something went wrong.", style: "error" }],
-            };
-
             if (last?.role === "assistant" && last._streaming) {
               updated[updated.length - 1] = {
                 role: "assistant",
-                response: errPayload,
+                response: data.element,
                 _streaming: false,
               };
             } else {
-              updated.push({ role: "assistant", response: errPayload });
+              updated.push({ role: "assistant", response: data.element });
             }
             return updated;
           });

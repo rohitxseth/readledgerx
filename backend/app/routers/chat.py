@@ -1,5 +1,6 @@
 import logging
 from contextlib import suppress
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -13,6 +14,7 @@ from fastapi import (
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.chat import ui
 from app.chat.chat_service import process_message
 from app.chat.session_manager import (
     get_conversation_history,
@@ -49,19 +51,14 @@ async def ws_chat(websocket: WebSocket):
         auth_data = await websocket.receive_json()
         if auth_data.get("type") != "auth" or not auth_data.get("token"):
             await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": "Auth required. Send: {type: 'auth', token: '<JWT>'}.",
-                }
+                ui.error_frame("Auth required. Send: {type: 'auth', token: '<JWT>'}.")
             )
             await websocket.close(code=4001, reason="Auth required")
             return
 
         user = await _authenticate_ws(auth_data["token"])
         if not user:
-            await websocket.send_json(
-                {"type": "error", "message": "Invalid or expired token."}
-            )
+            await websocket.send_json(ui.error_frame("Invalid or expired token."))
             await websocket.close(code=4003, reason="Auth failed")
             return
 
@@ -80,7 +77,7 @@ async def ws_chat(websocket: WebSocket):
 
             if msg_type != "message":
                 await websocket.send_json(
-                    {"type": "error", "message": f"Unknown message type: {msg_type}"}
+                    ui.error_frame(f"Unknown message type: {msg_type}")
                 )
                 continue
 
@@ -88,20 +85,22 @@ async def ws_chat(websocket: WebSocket):
                 body = ChatRequest.model_validate(data)
             except ValidationError as e:
                 await websocket.send_json(
-                    {"type": "error", "message": f"Invalid message format: {e}"}
+                    ui.error_frame(f"Invalid message format: {e}")
                 )
                 continue
 
+            # The one place a failed turn is handled: its transaction has rolled
+            # back, so nothing from the turn is persisted, and the client gets an
+            # error element instead of a reply.
             try:
                 async with async_engine.begin() as conn:
                     await process_message(body, user, conn, websocket.send_json)
+            except WebSocketDisconnect:
+                raise
             except Exception:
-                logger.exception("Chat message failed")
+                logger.exception("Chat turn failed")
                 await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Something went wrong processing your message.",
-                    }
+                    ui.error_frame("Something went wrong processing your message.")
                 )
 
     except WebSocketDisconnect:
@@ -118,24 +117,26 @@ async def ws_chat(websocket: WebSocket):
 async def list_sessions(
     current_user: User = Depends(get_current_user),
     limit: int = Query(50, ge=1, le=200),
+    conn: AsyncConnection = Depends(get_db),
 ):
-    sessions = await get_user_sessions(str(current_user.id), limit=limit)
+    sessions = await get_user_sessions(conn, current_user.id, limit=limit)
     return {"sessions": sessions}
 
 
 @router.get("/history")
 async def get_history(
-    session_id: str = Query(...),
+    session_id: UUID = Query(...),
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
+    conn: AsyncConnection = Depends(get_db),
 ):
-    session = await load_session(session_id)
-    if not session or str(session.get("user_id")) != str(current_user.id):
+    session = await load_session(conn, session_id)
+    if not session or session["user_id"] != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
         )
 
-    messages = await get_conversation_history(session_id, limit=limit)
+    messages = await get_conversation_history(conn, session_id, limit=limit)
     return {"session_id": session_id, "messages": messages, "total": len(messages)}
 
 

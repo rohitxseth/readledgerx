@@ -251,7 +251,7 @@ async def test_log(monkeypatch, amount, expected_pages):
     ({"pages": 500}, 400, "'Dune' only has 412 pages left (0/412 read). Try logging 412 pages instead."),
     ({}, 400, "How many pages? Give a page count or a percentage."),
     ({"percentage": 150}, 400, "A percentage must be between 0 and 100."),
-    ({"pages": -5}, 400, "PageCount cannot be negative, got -5"),
+    ({"pages": -5}, 400, "The number of pages can't be negative."),
     ({"action": "reduce", "pages": 5}, 400, "No pages have been logged for 'Dune' yet."),
 ])
 async def test_log_rule_violations_are_identical(monkeypatch, body, status, message):

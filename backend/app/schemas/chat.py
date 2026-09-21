@@ -1,5 +1,6 @@
 from enum import StrEnum
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +16,7 @@ class ChatActionData(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    session_id: str | None = Field(None, description="Session ID, null for new session")
+    session_id: UUID | None = Field(None, description="Null to start a new session.")
     session_name: str | None = None
     message: str | None = None
     message_type: MessageType = MessageType.TEXT

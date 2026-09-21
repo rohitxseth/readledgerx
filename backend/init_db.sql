@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS books (
 );
 
 -- ==============================================================================
--- READING_SESSIONS TABLE: Core fact table (event-based, append-only)
+-- READING_SESSIONS TABLE: one row per reading entry; progress is derived from
+-- these rows, never stored
 -- Purpose: Source of truth for reading activity
 -- ==============================================================================
 CREATE TABLE IF NOT EXISTS reading_sessions (

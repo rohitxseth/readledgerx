@@ -11,13 +11,10 @@ import re
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessageChunk
 
-from app.chat import ui
-from app.chat.router_agent import (
-    RouterAgent,
-    _correct_intent_typo,
-    _is_recommendation_request,
-)
+from app.chat import router_agent, ui
+from app.chat.router_agent import RouterAgent, _is_recommendation_request
 
 
 class _RecordingLLM:
@@ -32,7 +29,7 @@ class _RecordingLLM:
 
 
 def _agent(llm="recording"):
-    agent = RouterAgent(session={"id": "s1", "metadata": {}}, context={})
+    agent = RouterAgent(metadata={}, context={})
     agent.llm = _RecordingLLM() if llm == "recording" else llm
     return agent
 
@@ -197,58 +194,128 @@ def test_decline_uses_only_element_types_the_renderer_handles():
 
 
 # ---------------------------------------------------------------------------
-# Misspellings get the same reply as the correct spelling
-#
-# Regression: "recomment a book" missed the intercept, fell through to the LLM,
-# and came back as plain text with no buttons — a different answer from
-# "suggest a book" for the same request.
+# Look-alikes that mention the words without asking for a pick
 # ---------------------------------------------------------------------------
 
-async def test_misspelled_request_gets_an_identical_response():
-    typo_agent, correct_agent = _agent(), _agent()
-
-    typo = await typo_agent.run(_text("recomment a book"), history=[])
-    correct = await correct_agent.run(_text("recommend a book"), history=[])
-
-    assert typo_agent.llm.used is False
-    assert typo == correct
-
-
 @pytest.mark.parametrize("message", [
-    "recomment a book",
-    "reccomend a book",
-    "recomend something to read",
-    "can you sugest something?",
-    "suggets a novel",
-    "any recomendations?",
-    "reccommendations please",
-    "give me a book sugestion",
+    "biggest book on my shelf?",
+    "commend a book",
+    "books recommnded by Bill Gates",
+    "find books recommended by my book club",
+    "show my suggestions list",
 ])
-async def test_common_misspellings_are_declined_without_the_llm(message):
-    agent = _agent()
-    result = await agent.run(_text(message), history=[])
-
-    assert agent.llm.used is False
-    assert _element_types(result) == ["text", "action_buttons"]
-
-
-@pytest.mark.parametrize("message", [
-    "biggest book on my shelf?",          # "biggest" is 2 edits from "suggest"
-    "commend a book",                     # "commend" is 2 edits from "recommend"
-    "books recommnded by Bill Gates",     # typo'd look-alike stays a search
-])
-def test_typo_folding_does_not_create_false_positives(message):
+def test_look_alikes_are_not_intercepted(message):
     assert _agent()._intercept(_text(message)) is None
 
 
-@pytest.mark.parametrize("word, expected", [
-    ("recomment", "recommend"),
-    ("reccomend", "recommend"),
-    ("recommnded", "recommended"),   # nearest form wins, not the first listed
-    ("sugest", "suggest"),
-    ("biggest", "biggest"),          # first letter differs — left alone
-    ("digest", "digest"),
-    ("read", "read"),                # too short to fold
-])
-def test_correct_intent_typo(word, expected):
-    assert _correct_intent_typo(word) == expected
+# ---------------------------------------------------------------------------
+# LLM retries never duplicate text the client has already seen
+# ---------------------------------------------------------------------------
+
+class _ScriptedLLM:
+    """Each call to astream plays the next attempt; exceptions are raised in place."""
+
+    def __init__(self, *attempts):
+        self.attempts = list(attempts)
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    async def astream(self, messages):
+        self.calls += 1
+        for item in self.attempts.pop(0):
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+
+def _streaming_agent(llm, events):
+    async def record(element):
+        events.append(element)
+
+    agent = RouterAgent(metadata={}, context={}, stream_callback=record)
+    agent.llm = llm
+    return agent
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_delay(monkeypatch):
+    monkeypatch.setattr(router_agent, "_LLM_RETRY_DELAY_S", 0)
+
+
+async def test_no_retry_once_text_has_streamed_to_the_client():
+    llm = _ScriptedLLM(
+        [AIMessageChunk(content="Half an ans"), RuntimeError("connection dropped")],
+        [AIMessageChunk(content="A second, different answer")],
+    )
+    events = []
+    result = await _streaming_agent(llm, events).run(_text("hi"), history=[])
+
+    assert llm.calls == 1
+    assert [e["content"] for e in events] == ["Half an ans"]
+    assert result["response"]["elements"][0]["style"] == "error"
+
+
+async def test_a_failure_before_any_text_is_retried():
+    llm = _ScriptedLLM([RuntimeError("timeout")], [AIMessageChunk(content="Recovered")])
+    events = []
+    result = await _streaming_agent(llm, events).run(_text("hi"), history=[])
+
+    assert llm.calls == 2
+    assert result["response"]["elements"][0]["content"] == "Recovered"
+
+
+async def test_without_a_stream_a_partial_answer_is_retried():
+    """Over REST nothing reaches the client until the turn ends, so retrying is safe."""
+    llm = _ScriptedLLM(
+        [AIMessageChunk(content="Half"), RuntimeError("connection dropped")],
+        [AIMessageChunk(content="Whole answer")],
+    )
+    agent = _agent(llm=llm)
+    result = await agent.run(_text("hi"), history=[])
+
+    assert llm.calls == 2
+    assert result["response"]["elements"][0]["content"] == "Whole answer"
+
+
+async def test_a_tool_failure_propagates_without_rerunning_the_llm(monkeypatch):
+    """Retrying here would re-run tools that may already have written."""
+    call = AIMessageChunk(
+        content="",
+        tool_call_chunks=[{"name": "undo_last_log", "args": "{}", "id": "c1", "index": 0}],
+    )
+    llm = _ScriptedLLM([call], [call])
+
+    async def failing_tool(name, args, context):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(router_agent, "execute_tool", failing_tool)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await _agent(llm=llm).run(_text("undo that"), history=[])
+    assert llm.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# History sent to the LLM summarises each element once
+# ---------------------------------------------------------------------------
+
+def test_assistant_history_does_not_repeat_element_summaries():
+    response = ui.composite([
+        ui.text("Logged **40 pages** of **'Dune'**."),
+        ui.book_progress_card({"title": "Dune", "progress_percentage": 9.71}),
+        ui.action_buttons([ui.button("Log More Pages", "log_reading")]),
+    ])
+    stored = {
+        "role": "assistant",
+        # what chat_service stores as the assistant message's content
+        "content": " | ".join(ui.summarize_elements(response["elements"])),
+        "ui_payload": response,
+    }
+
+    messages = _agent()._build_messages([stored], _text("and now?"))
+    replayed = messages[1].content
+
+    assert replayed == stored["content"]
+    assert replayed.count("[Actions: Log More Pages]") == 1
+    assert replayed.count("[Progress: Dune") == 1

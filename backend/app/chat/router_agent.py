@@ -1,14 +1,18 @@
 import asyncio
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+)
 
 from app.chat import ui
 from app.chat.prompt import SYSTEM_PROMPT
-from app.chat.session_manager import parse_metadata
 from app.chat.tools import TOOL_DEFINITIONS, execute_tool
 from app.config.llm_config import get_langchain_llm
 
@@ -23,34 +27,19 @@ _ERROR_SUGGESTIONS = ["Try again", "Help"]
 
 _HELP_PHRASES = frozenset({"help", "help me", "what can you do", "commands", "options"})
 
-_RECOMMENDATION_RX = re.compile(
-    "|".join(
-        f"(?:{p})"
-        for p in (
-            r"^(?:please\s+)?(?:recommend|suggest)\b",
-            r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:recommend|suggest)\b",
-            r"\bwhat\s+(?:do|would)\s+you\s+(?:recommend|suggest)\b",
-            r"^(?:any\s+|some\s+)?(?:book\s+|reading\s+)?(?:recommendations?|suggestions?|recs)\b",
-            r"\b(?:any|some|a|your|book|reading)\s+(?:book\s+|reading\s+)?(?:recommendations?|suggestions?|recs)\b",
-            r"\bwhat\s+(?:book\s+|books\s+)?(?:should|shall|could|can)\s+i\s+read\b",
-            r"\bwhat\s+to\s+read\b",
-            r"\b(?:something|anything)\s+(?:good\s+|new\s+|fun\s+|interesting\s+)?to\s+read\b",
-            r"\bany\s+(?:good|great|decent)\s+(?:books?|novels?|reads?)\b",
-        )
-    )
-)
-
-_INTENT_WORDS = (
+_RECOMMENDATION_PHRASES = (
     "recommend",
-    "recommends",
-    "recommended",
-    "recommendation",
-    "recommendations",
     "suggest",
-    "suggests",
-    "suggested",
-    "suggestion",
-    "suggestions",
+    "what should i read",
+    "what to read",
+    "something to read",
+    "something good to read",
+    "any good books",
+)
+# A message that opens with a command names a book or a search, even when the
+# title contains "recommend" or "suggest" ("track The Recommendation").
+_COMMAND_WORDS = frozenset(
+    {"search", "find", "track", "log", "show", "books", "start", "add"}
 )
 
 _SEARCH_PROMPTS = {
@@ -73,44 +62,11 @@ _DEFAULT_SEARCH_PROMPT = (
 )
 
 
-def _edit_distance(a: str, b: str) -> int:
-    # Optimal string alignment distance: an adjacent swap ("suggets") is one edit.
-    prev2, prev = None, list(range(len(b) + 1))
-    for i in range(1, len(a) + 1):
-        cur = [i] + [0] * len(b)
-        for j in range(1, len(b) + 1):
-            cur[j] = min(
-                prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1])
-            )
-            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
-                cur[j] = min(cur[j], prev2[j - 2] + 1)
-        prev2, prev = prev, cur
-    return prev[-1]
-
-
-def _correct_intent_typo(word: str) -> str:
-    if word in _INTENT_WORDS or len(word) < 5:
-        return word
-    best, best_distance = word, None
-    for target in _INTENT_WORDS:
-        # Requiring the same first letter stops real words like "commend" (two
-        # edits from "recommend") from being folded into an intent word.
-        limit = 1 if len(target) <= 7 else 2
-        if word[0] != target[0] or abs(len(word) - len(target)) > limit:
-            continue
-        distance = _edit_distance(word, target)
-        if distance <= limit and (best_distance is None or distance < best_distance):
-            best, best_distance = target, distance
-    return best
-
-
 def _is_recommendation_request(message: str) -> bool:
-    normalized = re.sub(
-        r"[a-z]+",
-        lambda m: _correct_intent_typo(m.group(0)),
-        (message or "").strip().lower(),
-    )
-    return bool(_RECOMMENDATION_RX.search(normalized))
+    words = message.split()
+    if not words or words[0] in _COMMAND_WORDS:
+        return False
+    return any(phrase in message for phrase in _RECOMMENDATION_PHRASES)
 
 
 def _result(
@@ -126,13 +82,13 @@ def _result(
 class RouterAgent:
     def __init__(
         self,
-        session: dict,
+        metadata: dict,
         context: dict,
         stream_callback: Callable[[dict], Awaitable[None]] | None = None,
     ):
+        self.metadata = metadata
         self.context = context
         self.stream_callback = stream_callback
-        self.metadata = parse_metadata(session.get("metadata"))
         self.llm = get_langchain_llm()
 
     async def run(self, user_input: dict, history: list[dict]) -> dict:
@@ -145,17 +101,31 @@ class RouterAgent:
                 "AI service is not configured. Please set up Azure OpenAI or OpenAI credentials."
             )
 
-        messages = self._build_messages(history, user_input)
-        llm_with_tools = self.llm.bind_tools(TOOL_DEFINITIONS)
+        response = await self._call_llm(self._build_messages(history, user_input))
+        if response is None:
+            return self._error_result(
+                "I'm having trouble processing your request. Please try again."
+            )
 
         # Single pass: tool results go straight back to the user rather than
         # to a second LLM call, which bounds latency and cost per message.
+        if response.tool_calls:
+            return await self._handle_tool_calls(
+                response.tool_calls, user_input, response.content or ""
+            )
+        text = response.content or ""
+        return _result([ui.text(text)], self._infer_suggestions_from_text(text))
+
+    async def _call_llm(self, messages: list[BaseMessage]) -> AIMessageChunk | None:
+        llm_with_tools = self.llm.bind_tools(TOOL_DEFINITIONS)
         for attempt in range(1, _LLM_MAX_RETRIES + 1):
+            streamed = False
+            response = None
             try:
-                response = None
                 async for chunk in llm_with_tools.astream(messages):
                     response = chunk if response is None else response + chunk
                     if chunk.content and self.stream_callback:
+                        streamed = True
                         await self.stream_callback(
                             {
                                 "type": "text_chunk",
@@ -163,25 +133,17 @@ class RouterAgent:
                                 "style": "default",
                             }
                         )
-
-                if response and response.tool_calls:
-                    return await self._handle_tool_calls(
-                        response.tool_calls, user_input, response.content or ""
-                    )
-
-                text = (response.content or "") if response else ""
-                return _result([ui.text(text)], self._infer_suggestions_from_text(text))
-
-            except Exception as exc:
-                if attempt < _LLM_MAX_RETRIES:
-                    logger.warning("LLM call failed (attempt %d): %s", attempt, exc)
-                    await asyncio.sleep(_LLM_RETRY_DELAY_S * attempt)
-                else:
-                    logger.exception("LLM call failed; giving up")
-
-        return self._error_result(
-            "I'm having trouble processing your request. Please try again."
-        )
+                return response
+            except Exception:
+                # Once text has reached the client, a retry would stream it twice.
+                if streamed or attempt == _LLM_MAX_RETRIES:
+                    logger.exception("LLM call failed")
+                    return None
+                logger.warning(
+                    "LLM call failed (attempt %d); retrying", attempt, exc_info=True
+                )
+                await asyncio.sleep(_LLM_RETRY_DELAY_S * attempt)
+        return None
 
     def _intercept(self, user_input: dict) -> dict | None:
         """Answer requests whose reply is fixed without calling the LLM."""
@@ -223,18 +185,7 @@ class RouterAgent:
                     ui.progress(f"Running {name.replace('_', ' ')}…")
                 )
 
-            try:
-                result = await execute_tool(name, args, self.context)
-            except Exception as exc:
-                logger.exception("Tool %s failed", name)
-                result = {
-                    "elements": [
-                        ui.text(f"Sorry, that operation failed: {exc}", style="error")
-                    ],
-                    "suggestions": _ERROR_SUGGESTIONS,
-                    "metadata_updates": {},
-                }
-
+            result = await execute_tool(name, args, self.context)
             if result["metadata_updates"]:
                 self.metadata.update(result["metadata_updates"])
                 session_updates["metadata"] = self.metadata
@@ -250,33 +201,20 @@ class RouterAgent:
     def _build_messages(
         self, history: list[dict], user_input: dict
     ) -> list[BaseMessage]:
+        # Stored assistant content already summarises the UI elements it showed
+        # (see chat_service), so it is passed through as-is.
         messages = [SystemMessage(content=SYSTEM_PROMPT)]
         for msg in history[-_MAX_HISTORY_TURNS:]:
             content = msg.get("content") or ""
             if msg.get("role") == "user":
                 messages.append(HumanMessage(content=content))
             elif msg.get("role") == "assistant":
-                messages.append(
-                    AIMessage(
-                        content=self._enrich_assistant_content(
-                            content, msg.get("ui_payload")
-                        )
-                    )
-                )
+                messages.append(AIMessage(content=content))
 
         current = self._format_user_input(user_input)
         if current:
             messages.append(HumanMessage(content=current))
         return messages
-
-    @staticmethod
-    def _enrich_assistant_content(text: str, ui_payload: dict | str | None) -> str:
-        elements = ui_payload.get("elements") if isinstance(ui_payload, dict) else None
-        if not elements:
-            return text
-        parts = [text] if text else []
-        parts.extend(ui.summarize_elements(elements, include_text=False))
-        return " | ".join(parts)
 
     @staticmethod
     def _format_user_input(user_input: dict) -> str:

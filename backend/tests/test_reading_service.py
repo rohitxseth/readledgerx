@@ -365,3 +365,32 @@ async def test_operations_on_an_unknown_book_raise_not_found():
     svc = _make_service()
     with pytest.raises(EntityNotFoundError):
         await svc.log_reading(uuid.uuid4(), uuid.uuid4(), pages=5)
+
+
+# ---------------------------------------------------------------------------
+# Page counts fail with a message a user can act on
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("pages, message", [
+    (-5, "The number of pages can't be negative."),
+    (100_001, "The number of pages can't be more than 100,000."),
+    (2.5, "The number of pages must be a whole number."),
+])
+async def test_invalid_page_counts_get_a_readable_error(pages, message):
+    book = make_book(title="Dune", page_count=412)
+    svc, repo = _service_with(book)
+
+    with pytest.raises(BusinessLogicError) as exc:
+        await svc.log_reading(uuid.uuid4(), book.id, pages=pages)
+    assert exc.value.message == message
+    assert repo._sessions == []
+
+
+@pytest.mark.parametrize("call", ["add_reading_session", "start_tracking"])
+async def test_every_write_path_validates_pages(call):
+    book = make_book(title="Dune", page_count=412)
+    svc, repo = _service_with(book)
+
+    with pytest.raises(BusinessLogicError, match="can't be negative"):
+        await getattr(svc, call)(uuid.uuid4(), book.id, -1)
+    assert repo._sessions == []

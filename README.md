@@ -4,7 +4,7 @@
 
 ---
 
-> [ReadLedger chat demo](docs/demo.gif)
+![ReadLedger demo](docs/readledger-demo.gif)
 
 ---
 
@@ -73,10 +73,13 @@ so this works with no further changes. Interactive API docs: <http://localhost:8
 
 ```bash
 cd backend
-uv run pytest            # ~200 tests, ~3s, no database, network or LLM required
+uv run pytest            # 198 tests, ~3s, no database, network or LLM required
+
+cd ../frontend
+npm test                 # 8 tests (Vitest + Testing Library)
 ```
 
-Repositories and the Google Books client are swapped for in-memory fakes that satisfy
+Repositories, the Google Books client and the LLM wrapper are swapped for in-memory fakes that satisfy
 the same `typing.Protocol` interfaces as the real implementations — which is the
 practical payoff of the design below. The REST routes are exercised in-process through
 FastAPI with those same fakes.
@@ -93,7 +96,7 @@ composition root.
 flowchart TD
     R["<b>routers/</b><br/>HTTP + WebSocket endpoints<br/><i>no business logic</i>"]
     S["<b>services/</b><br/>BookService · ReadingService · AuthService<br/><i>pure business rules</i>"]
-    I{{"<b>interfaces/</b> — typing.Protocol<br/>IBookRepository · IReadingRepository<br/>IUserRepository · IBookSearchClient"}}
+    I{{"<b>interfaces/</b> — typing.Protocol<br/>IBookRepository · IReadingRepository · IUserRepository<br/>IAuditRepository · IBookSearchClient · IBookIntelligence"}}
     Rep["<b>repositories/</b><br/>SQLAlchemy Core queries"]
     Int["<b>integrations/</b><br/>GoogleBooksClient"]
     DB[("PostgreSQL")]
@@ -210,7 +213,7 @@ sequenceDiagram
 The agent loop is deliberately **single-pass**: the LLM gets one chance to call tools,
 and tool results are returned to the user rather than fed back for a second LLM turn.
 That bounds latency and cost per message at the price of multi-step reasoning —
-a trade-off discussed in [DESIGN.md](./DESIGN.md#6-langchain-router-agent).
+a trade-off discussed in [DESIGN.md](./DESIGN.md#4-langchain-router-agent).
 
 ### The six-stage book resolution pipeline
 
@@ -315,14 +318,14 @@ Server → {"type":"element","element":{...}}            # repeated per BDUI ele
 Server → {"type":"done","response":{...},"suggestions":[...]}
 ```
 
-### Progress is event-sourced
+### Progress is derived, never stored
 
-There is no `progress` column anywhere. `reading_sessions` is the fact table — one row
-per *"I read N pages on date D"* — and every number the UI shows is a `SUM` over those
-rows joined against the book's page count. Storing a running total would mean two
-sources of truth that can drift; deriving it means they cannot.
-[DESIGN.md](./DESIGN.md#8-event-sourced-reading-progress) covers what this costs as well
-as what it buys.
+There is no `progress` column anywhere. Progress is derived from session rows, never
+stored: `reading_sessions` holds one row per *"I read N pages on date D"*, and every
+number the UI shows is a `SUM` over those rows joined against the book's page count.
+Storing a running total would mean two sources of truth that can drift; deriving it
+means they cannot. [DESIGN.md](./DESIGN.md#6-derived-reading-progress) covers what this
+costs as well as what it buys.
 
 ## Tech stack
 
@@ -331,10 +334,10 @@ as what it buys.
 | API | FastAPI (async), WebSocket streaming |
 | Database | PostgreSQL 15, SQLAlchemy Core + asyncpg |
 | LLM | LangChain + Azure OpenAI / OpenAI (tool calling, structured output) |
-| Auth | JWT (python-jose), bcrypt (Argon2 available) |
+| Auth | JWT (python-jose), bcrypt |
 | External data | Google Books API |
 | Frontend | React 18 + Vite |
-| Tooling | uv, pytest + pytest-asyncio, Docker Compose |
+| Tooling | uv, pytest + pytest-asyncio, Vitest, Docker Compose |
 
 ## API
 
@@ -365,13 +368,11 @@ trade-offs and what would change at production scale.
 |----------|-----|
 | [Protocol over ABC](./DESIGN.md#1-protocol-based-dependency-injection) | Test fakes satisfy the interface without importing production code |
 | [Composition root](./DESIGN.md#composition-root) | One file knows concrete classes; everything else sees interfaces |
-| [Event-sourced progress](./DESIGN.md#8-event-sourced-reading-progress) | Progress is derived, so it cannot drift from its own history |
-| [Backend-driven UI](./DESIGN.md#7-backend-driven-ui-bdui) | New chat widgets ship as a backend change plus one renderer case |
-| [Agent as an adapter](./DESIGN.md#10-the-agent-is-a-routing-layer) | Rules live in services, so the chat agent and REST API can't disagree |
-| [Six-stage resolution](./DESIGN.md#9-the-book-resolution-pipeline) | LLM calls only where deterministic matching has already failed |
+| [Derived progress](./DESIGN.md#6-derived-reading-progress) | Progress is derived from session rows, never stored, so it cannot drift |
+| [Backend-driven UI](./DESIGN.md#5-backend-driven-ui-bdui) | New chat widgets ship as a backend change plus one renderer case |
+| [Agent as an adapter](./DESIGN.md#8-the-agent-is-a-routing-layer) | Rules live in services, so the chat agent and REST API can't disagree |
+| [Six-stage resolution](./DESIGN.md#7-the-book-resolution-pipeline) | LLM calls only where deterministic matching has already failed |
 | [Domain mappers](./DESIGN.md#2-domain-mappers) | DB column renames stay contained to one file |
-| [Value objects](./DESIGN.md#3-value-objects) | Invalid page counts and emails fail at construction, not at the DB |
-| [Event bus](./DESIGN.md#5-event-bus) | Audit logging subscribes to registration instead of being called by it |
 
 <details>
 <summary>Project structure</summary>
@@ -379,10 +380,9 @@ trade-offs and what would change at production scale.
 ```
 backend/app/
 ├── chat/           # RouterAgent, tool implementations, BDUI helpers, session manager
-├── config/         # Settings, LLM provider selection, logging
+├── config/         # Settings, LLM provider selection
 ├── core/           # Composition root (dependencies.py), domain exceptions
-├── domain/         # Mappers, value objects
-├── events/         # In-process event bus, user events, handlers
+├── domain/         # Mappers
 ├── integrations/   # Google Books client
 ├── interfaces/     # Protocol definitions
 ├── repositories/   # SQLAlchemy Core queries

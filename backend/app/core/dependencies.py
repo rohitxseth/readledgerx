@@ -4,10 +4,12 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.config.llm_config import get_langchain_llm
 from app.core.exceptions import AuthenticationError, EntityNotFoundError
 from app.database import get_db
 from app.integrations.google_books import GoogleBooksClient
 from app.interfaces.repository_interfaces import IUserRepository
+from app.repositories.audit_repository import AuditRepository
 from app.repositories.book_repository import BookRepository
 from app.repositories.reading_repository import ReadingRepository
 from app.repositories.user_repository import UserRepository
@@ -30,11 +32,15 @@ def get_user_repository(conn: AsyncConnection = Depends(get_db)) -> UserReposito
     return UserRepository(conn)
 
 
+def get_audit_repository(conn: AsyncConnection = Depends(get_db)) -> AuditRepository:
+    return AuditRepository(conn)
+
+
 def get_book_service(conn: AsyncConnection = Depends(get_db)) -> BookService:
     return BookService(
         repo=BookRepository(conn),
         search_client=GoogleBooksClient(),
-        intelligence=BookIntelligenceService(),
+        intelligence=BookIntelligenceService(get_langchain_llm()),
     )
 
 

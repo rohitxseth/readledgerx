@@ -14,6 +14,11 @@ class IUserRepository(Protocol):
 
 
 @runtime_checkable
+class IAuditRepository(Protocol):
+    async def record(self, user_id: UUID, action: str, details: dict) -> None: ...
+
+
+@runtime_checkable
 class IBookRepository(Protocol):
     async def get_by_id(self, book_id: UUID) -> Book | None: ...
     async def get_by_title(self, title: str) -> Book | None: ...

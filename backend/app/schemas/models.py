@@ -50,6 +50,17 @@ class BookProgress(BaseModel):
     thumbnail_url: str | None = None
 
 
+class NormalizedQuery(BaseModel):
+    normalized_query: str = Field(
+        description="The formal, normalized book title and author extracted from the query. "
+        "E.g., 'harry potter 1' -> 'Harry Potter and the Sorcerer\\'s Stone'. "
+        "If the query is already formal, leave it as is."
+    )
+    is_valid_book_query: bool = Field(
+        description="True if the user's query seems to be requesting a book, False if it's completely unrelated."
+    )
+
+
 LogAction = Literal["add", "set", "reduce", "remove"]
 ProgressFilter = Literal["completed", "in_progress", "not_started"]
 ProgressSort = Literal["pages_read", "percent_complete", "last_read"]

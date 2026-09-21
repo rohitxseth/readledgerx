@@ -20,7 +20,7 @@ Services don't know what database you're using. Repositories don't know what bus
 logic runs on top of them.
 
 The through-line for most of what follows: **push decisions to the boundary, keep the
-middle pure.** Validation happens at construction, I/O happens behind interfaces, and
+middle pure.** Input is validated where it enters, I/O happens behind interfaces, and
 the business logic in between is ordinary Python that runs in milliseconds under test.
 
 ---
@@ -45,7 +45,7 @@ class BookService:
         self,
         repo: IBookRepository,
         search_client: IBookSearchClient,
-        intelligence: BookIntelligenceService,
+        intelligence: IBookIntelligence,
     ):
         ...
 ```
@@ -73,8 +73,8 @@ class FakeBookRepository:                    # no import, no base class
     async def get_by_title(self, title): ...
 ```
 
-`tests/conftest.py` is written this way on purpose — it defines three fake repositories
-and a fake search client, and **none of them import the interfaces they satisfy**. The
+`tests/conftest.py` is written this way on purpose — it defines a fake for every repository
+and for the search client, and **none of them import the interfaces they satisfy**. The
 conformance is checked by the type checker statically, and by the fact that the service
 under test actually calls the methods.
 
@@ -85,7 +85,7 @@ That yields three concrete properties:
    requires zero changes to service code — **OCP**
 3. Unit tests need no database, no network, and no mocking framework — **testability**
 
-The whole `backend/tests` suite runs in about two seconds with no I/O of any kind. That
+The whole `backend/tests` suite runs in about three seconds with no I/O of any kind. That
 is the payoff, and it is the reason to prefer the structural interface.
 
 **The honest caveat:** `@runtime_checkable` makes `isinstance(x, IBookRepository)` work,
@@ -131,100 +131,29 @@ the domain field is `hashed_password`, and the mapper is where that translation 
 
 ---
 
-## 3. Value Objects
+## 3. Password Hashing Behind a Protocol
 
-**Files:** `app/domain/value_objects.py`
-
-Value objects enforce domain invariants at construction time. They fail fast, at the
-boundary, rather than letting invalid data propagate silently through the system.
-
-```python
-PageCount(-1)     # raises ValueError immediately
-Email("notvalid") # raises ValueError immediately
-```
-
-`PageCount` is used in `ReadingRepository.create_session()` to validate pages before any
-DB call is made. `Email` is validated in the registration endpoint before we even check
-whether the user exists.
-
-The rule being encoded: **the database's CHECK constraints are a backstop, not the
-validation layer.** A `CHECK (pages >= 0)` violation surfaces as an `IntegrityError`
-somewhere deep in a driver, with no useful message for the caller. `PageCount(-1)` fails
-at the point the bad value entered the system, with a message that names the problem.
-Both exist; they are defending different things.
-
----
-
-## 4. Strategy Pattern for Password Hashing
-
-**Files:** `app/services/password_hasher.py`, `app/services/auth_service.py`
+**Files:** `app/services/password_hasher.py`, `app/services/auth_service.py`, `app/routers/auth.py`
 
 ```python
 class IPasswordHasher(Protocol):
     def hash(self, password: str) -> str: ...
     def verify(self, plain: str, hashed: str) -> bool: ...
-
-class BcryptPasswordHasher:   # default — good general-purpose choice
-    ...
-
-class Argon2PasswordHasher:   # memory-hard — stronger against GPU brute-forcing
-    ...
 ```
 
-`AuthService` doesn't know which algorithm it uses — it just calls `self._hasher.hash()`.
-Switching from bcrypt to Argon2 is a one-line change in `dependencies.py`.
+`AuthService` takes any `IPasswordHasher`. The composition root wires in
+`BcryptPasswordHasher`; the auth-route tests inject a trivial hasher so they don't spend a
+quarter of a second on every bcrypt round.
 
-**Caveat worth stating:** swapping the hasher only affects *new* hashes. Existing bcrypt
-hashes in the database stay bcrypt, and a real migration means verifying against the old
-algorithm and transparently re-hashing on successful login. The Strategy pattern makes
-the swap possible; it does not make it free.
+bcrypt accepts at most 72 bytes of input, and bcrypt 5 raises rather than truncating. The
+limit is checked on the request schema **in bytes, not characters**: 40 accented letters
+are 80 bytes, and they get a 422 with a readable message instead of a 500 from inside the
+hasher. The same schema lowercases the email, for registration and login alike, so
+`Reader@Example.com` and `reader@example.com` are one account.
 
 ---
 
-## 5. Event Bus
-
-**Files:** `app/events/event_bus.py`, `app/events/user_events.py`, `app/events/handlers.py`
-
-The event bus decouples side-effects from core flows. When a user registers, the
-registration handler publishes a `UserRegisteredEvent`. Anything that needs to react —
-audit logging, welcome emails, analytics — subscribes independently.
-
-```python
-# Registration flow: no knowledge of what happens next
-await event_bus.publish(UserRegisteredEvent(user_id=..., email=...))
-
-# Independently, handlers react
-async def on_user_registered(event: UserRegisteredEvent):
-    await _write_audit_log("user_registered", event.user_id, ...)
-```
-
-Events are frozen dataclasses — immutable and typed. Handlers are registered at startup
-in `main.py`. Adding a new side-effect means adding one function and one `subscribe()`
-call; the registration router never changes.
-
-### What this implementation is not
-
-Being precise about the limits matters more than the pattern itself:
-
-- **It is in-process.** Nothing survives a restart, and there is no retry. A handler that
-  fails has failed permanently.
-- **`publish()` is sequential and awaited**, so a slow handler adds latency directly to
-  the user's request. It looks asynchronous; it is not decoupled in time.
-- **Handler exceptions are swallowed and logged.** That keeps a failing audit write from
-  breaking registration, which is the right call for audit — but it means a handler can
-  fail silently forever, and nothing surfaces it.
-- **Handlers open their own database connections**, so they cannot see the caller's
-  uncommitted transaction. Publishing an event *before* the surrounding request commits
-  means a handler may observe a row that does not exist yet. Events should be published
-  after commit, or handlers should join the caller's transaction.
-
-For a production system with reliability requirements this becomes a real queue (SQS,
-Kafka) with retries and a dead-letter queue — but the subscriber interface in application
-code stays the same, which is the point of routing side-effects through a bus at all.
-
----
-
-## 6. LangChain Router Agent
+## 4. LangChain Router Agent
 
 **Files:** `app/chat/router_agent.py`, `app/chat/tools.py`, `app/chat/prompt.py`
 
@@ -301,7 +230,7 @@ dependency — rather than as a function call.
 
 ---
 
-## 7. Backend-Driven UI (BDUI)
+## 5. Backend-Driven UI (BDUI)
 
 **Files:** `app/chat/ui.py`, `frontend/src/components/BduiRenderer.jsx`
 
@@ -357,20 +286,19 @@ missing progress card.
   nothing. `BduiRenderer` returning `null` for unknown types makes that a silent blank
   rather than a crash — the failure mode is chosen, but it is still a failure mode.
 - **The payload is now a schema.** Old rows in `ui_payload` must stay renderable forever,
-  so element shapes are effectively an append-only contract. Renaming a field means
-  migrating history.
+  so element shapes can only ever gain fields. Renaming a field means migrating history.
 - **It only pays off for generated UI.** For a CRUD screen this would be pure overhead.
   It earns its keep here because the server decides what the response *is*, turn by turn.
 
 ---
 
-## 8. Event-Sourced Reading Progress
+## 6. Derived Reading Progress
 
 **Files:** `backend/init_db.sql`, `app/repositories/reading_repository.py`
 
-**There is no `progress` column anywhere in the schema.** `reading_sessions` is the fact
-table — one row per *"I read N pages on date D"* — and every number the UI displays is
-derived from it at read time:
+**There is no `progress` column anywhere in the schema.** Progress is derived from session
+rows, never stored: `reading_sessions` holds one row per *"I read N pages on date D"*, and
+every number the UI displays is computed from those rows at read time:
 
 ```sql
 SELECT books.page_count           AS total_pages,
@@ -394,9 +322,8 @@ there is nothing for it to disagree with.
 
 Three things follow from it that are worth having:
 
-- **Undo is one row.** `undo_last_log` deletes the newest session — the log's last event —
-  whichever book it was for. That is exact for anything appended, and only for that:
-  see the next bullet.
+- **Undo is one row.** `undo_last_log` deletes the newest session row, whichever book it
+  was for.
 - **Corrections are natural.** *"I meant 20, not 40"* walks the sessions backwards from the most
   recent and trims them. With a stored counter it is arithmetic on a number nobody can
   audit; here it is an operation on the records that produced it.
@@ -410,25 +337,24 @@ Three things follow from it that are worth having:
 
 ### What it costs
 
-- **`read_on` is a `DATE`, so the log alone cannot order two books read on the same
-  day.** Progress therefore also carries `MAX(created_at)` as `last_session_at`, purely
-  to break that tie when ranking by recency. Worth knowing that the fact table's
-  natural key is coarser than it looks.
+- **`read_on` is a `DATE`, so the session rows alone cannot order two books read on the
+  same day.** Progress therefore also carries `MAX(created_at)` as `last_session_at`, purely
+  to break that tie when ranking by recency. Worth knowing that the table's natural
+  key is coarser than it looks.
 - **Every progress read is an aggregate.** Acceptable at this size, with
   `idx_rs_user_book` covering the grouping. At a scale where a user has tens of thousands
   of sessions, this wants a rollup table or a materialized view — reintroducing the stored
-  total deliberately, as a *cache* that can be rebuilt from the log, rather than as a
+  total deliberately, as a *cache* that can be rebuilt from the session rows, rather than as a
   second source of truth.
-- **The log is not actually append-only, and that is a real inconsistency.** `reduce` and
-  `set` DELETE and UPDATE historical rows. A strict event-sourced design would append a
-  compensating negative entry instead, preserving the audit trail and keeping the
-  aggregate a pure `SUM`. The current approach destroys history to keep the sum correct.
-  The schema comment calls the table append-only; today the write paths do not honour
-  that. Appending corrections is the change I would make first.
+- **Corrections rewrite rows rather than adding them.** `reduce` and `set` UPDATE and
+  DELETE existing sessions, so the table reflects current progress, not a history of
+  every edit. The sum stays correct either way. If an audit trail of corrections
+  mattered, they would become compensating rows instead — which also means relaxing
+  `CHECK (pages >= 0)`.
 
 ---
 
-## 9. The Book Resolution Pipeline
+## 7. The Book Resolution Pipeline
 
 **Files:** `app/services/book_service.py`, `app/services/book_intelligence.py`
 
@@ -524,7 +450,7 @@ near-duplicate rows for every spelling variation.
 
 ---
 
-## 10. The Agent Is a Routing Layer
+## 8. The Agent Is a Routing Layer
 
 **Files:** `app/chat/tools.py`, `app/routers/books.py`, `app/routers/reading.py`,
 `app/services/`, `tests/test_adapter_equivalence.py`
@@ -612,7 +538,7 @@ def get_book_service(conn) -> BookService:
     return BookService(
         repo=BookRepository(conn),
         search_client=GoogleBooksClient(),
-        intelligence=BookIntelligenceService(),
+        intelligence=BookIntelligenceService(get_langchain_llm()),
     )
 ```
 
@@ -643,6 +569,23 @@ way to evolve a schema in place. Alembic is the correct answer for anything beyo
 the current setup is chosen for reviewer setup time, not because migrations were
 considered unnecessary.
 
+**Audit rows are written in the request's transaction.** Registration and login write
+their `audit_log` row through a repository on the same connection as the user write, so
+the audit row commits with the new user or not at all. An earlier version published an
+event to an in-process bus whose handler opened its own connection. It ran before the
+registration committed, hit the foreign key to a user that wasn't visible yet, and the
+bus swallowed the error, so no registration was ever audited. A queue earns its place
+when a side effect has to survive the request failing; an audit row is the opposite case.
+
+**A chat turn is one transaction with one failure boundary.** The user message, any tool
+writes, the session metadata and the assistant reply share one connection. Nothing below
+the WebSocket handler catches unexpected errors: if any step fails, the turn rolls back
+and the handler sends a BDUI error element, so the user never sees a reply that wasn't
+saved. Expected failures — a book that can't be found, more pages than the book has — are
+domain errors that the tools turn into ordinary replies. The one retry is the LLM call,
+and only before anything has streamed: once text has reached the client, a retry would
+stream a second, different answer after the first.
+
 **JWT rather than server-side sessions.** Tokens carry `sub` and `exp` and nothing else,
 so authenticating a request is a signature check plus one user lookup, with no session
 store. The cost is that logout cannot invalidate a live token — seven days is a long
@@ -658,11 +601,8 @@ or a revocation list.
 | Protocol interfaces (DIP) | `interfaces/` → `services/` |
 | Composition Root | `core/dependencies.py` |
 | Domain Mappers (SRP) | `domain/mappers.py` |
-| Value Objects | `domain/value_objects.py` |
-| Strategy (password hashing) | `services/password_hasher.py` |
-| Observer / Event Bus | `events/` |
 | Tool-calling Agent | `chat/router_agent.py` |
 | Backend-Driven UI | `chat/ui.py` + `BduiRenderer.jsx` |
-| Event sourcing (derived state) | `reading_sessions` → `BookProgress` |
+| Derived progress, never stored | `reading_sessions` → `BookProgress` |
 | Layered resolution w/ LLM fallback | `services/book_service.py` |
 | Ports & adapters (agent + REST) | `chat/tools.py`, `routers/` → `services/` |

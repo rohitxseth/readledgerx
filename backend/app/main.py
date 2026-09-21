@@ -13,9 +13,6 @@ from app.core.exceptions import (
     ExternalServiceError,
 )
 from app.database import async_engine
-from app.events.event_bus import event_bus
-from app.events.handlers import on_user_logged_in, on_user_registered
-from app.events.user_events import UserLoggedInEvent, UserRegisteredEvent
 from app.routers import auth, books, chat, reading
 
 logging.basicConfig(
@@ -24,9 +21,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-event_bus.subscribe(UserRegisteredEvent, on_user_registered)
-event_bus.subscribe(UserLoggedInEvent, on_user_logged_in)
 
 app = FastAPI(title="ReadLedger API")
 
