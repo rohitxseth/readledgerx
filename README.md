@@ -186,7 +186,12 @@ first** and the LLM is consulted only when plain matching has already failed.
 
 ```mermaid
 flowchart TD
-    Start(["resolve_book('harry potter 1')"]) --> S1
+    Start(["resolve_book('harry potter 1')"]) --> S0
+
+    S0{"<b>0.</b> Names a book shown<br/>earlier this session?"}
+    S0 -->|yes| Pin["Use that exact volume<br/><i>matched on google_volume_id</i>"]
+    Pin --> Done
+    S0 -->|no| S1
 
     S1{"<b>1.</b> Exact/substring<br/>title match in DB?"}
     S1 -->|hit| Done(["return Book"])
@@ -212,14 +217,20 @@ flowchart TD
     S6 -->|yes| Done
     S6 -->|no| Save["INSERT into books"] --> Done
 
+    style S0 fill:#2d3748,stroke:#63b3ed,stroke-width:2px,color:#fff
+    style Pin fill:#2d3748,stroke:#63b3ed,stroke-width:2px,color:#fff
     style S2 fill:#2d3748,stroke:#f6ad55,stroke-width:2px,color:#fff
     style S5 fill:#2d3748,stroke:#f6ad55,stroke-width:2px,color:#fff
     style Done fill:#22543d,stroke:#48bb78,color:#fff
     style Nothing fill:#742a2a,stroke:#fc8181,color:#fff
 ```
 
-Two things this buys:
+Three things this buys:
 
+- **Stage 0 keeps the conversation honest.** Search for *"ayn rand"*, see The
+  Fountainhead at 740 pages, then type *"The Fountainhead"* — you get the volume you
+  were just shown. Without it, the title re-enters at stage 1 and the pipeline picks
+  an edition independently, so the page count can change under you.
 - **Stages 1 and 3 are a cache.** A title anyone has already looked up costs one
   indexed query — no LLM call, no HTTP call.
 - **Stage 6 deduplicates on `google_volume_id`, not on title.** The books table is a

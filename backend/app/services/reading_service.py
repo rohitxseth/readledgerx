@@ -12,6 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 class ReadingService:
+    # Ranking functions for get_all_progress(sort_by=...). All rank highest-first.
+    _SORT_KEYS = {
+        "pages_read": lambda p: p.pages_read,
+        "percent_complete": lambda p: p.progress_percentage,
+        # read_on is date-granular; fall back to the newest session timestamp so
+        # two books read on the same day still order correctly. timestamp()
+        # keeps the key a float, avoiding naive/aware datetime comparisons.
+        "last_read": lambda p: (
+            p.last_read_date,
+            p.last_session_at.timestamp() if p.last_session_at else 0.0,
+        ),
+    }
+
     def __init__(
         self,
         reading_repo: IReadingRepository,
@@ -60,15 +73,31 @@ class ReadingService:
     async def get_all_progress(
         self, user_id: uuid_module.UUID,
         filter_by: str | None = None,
+        sort_by: str | None = None,
+        limit: int | None = None,
     ) -> list[BookProgress]:
+        """Return tracked books, optionally filtered, ranked and truncated.
+
+        *sort_by* ranks highest-first, which is what aggregate questions want
+        ("most read book", "what did I read most recently"). Combined with
+        *limit* it answers them without a second LLM turn.
+        """
         all_progress = await self.reading_repo.get_all_progress(user_id)
 
         if filter_by == "completed":
-            return [p for p in all_progress if p.progress_percentage >= 100]
+            all_progress = [p for p in all_progress if p.progress_percentage >= 100]
         elif filter_by == "in_progress":
-            return [p for p in all_progress if 0 < p.progress_percentage < 100]
+            all_progress = [p for p in all_progress if 0 < p.progress_percentage < 100]
         elif filter_by == "not_started":
-            return [p for p in all_progress if p.progress_percentage == 0]
+            all_progress = [p for p in all_progress if p.progress_percentage == 0]
+
+        sort_key = self._SORT_KEYS.get(sort_by)
+        if sort_key:
+            all_progress = sorted(all_progress, key=sort_key, reverse=True)
+
+        if limit is not None and limit > 0:
+            all_progress = all_progress[:limit]
+
         return all_progress
 
     async def reduce_reading_progress(

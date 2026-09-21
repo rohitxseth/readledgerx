@@ -44,4 +44,7 @@ class BookProgress(BaseModel):
     pages_read: int
     progress_percentage: float
     last_read_date: datetime
+    # read_on is a DATE, so it can't order two books read the same day.
+    # created_at carries the sub-day ordering needed to break that tie.
+    last_session_at: Optional[datetime] = None
     thumbnail_url: Optional[str] = None

@@ -15,6 +15,7 @@ from typing import Awaitable, Callable, Optional
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.chat.prompt import SYSTEM_PROMPT
+from app.chat.session_manager import parse_metadata
 from app.chat.tools import TOOL_DEFINITIONS, execute_tool
 from app.chat import ui
 from app.config.llm_config import get_langchain_llm
@@ -54,7 +55,7 @@ class RouterAgent:
         self.context = context
         self.stream_callback = stream_callback
         self.session_id = session.get("id", "")
-        self.metadata = self._parse_metadata(session.get("metadata"))
+        self.metadata = parse_metadata(session.get("metadata"))
         self.llm = get_langchain_llm()
 
     async def run(self, user_input: dict, history: list[dict]) -> dict:
@@ -154,7 +155,10 @@ class RouterAgent:
             meta_updates = result.get("metadata_updates", {})
             if meta_updates:
                 self.metadata.update(meta_updates)
-                session_updates["metadata"] = json.dumps(self.metadata)
+                # Store the dict itself: the column is JSONB, so json.dumps here
+                # would persist a JSON *string* scalar rather than an object,
+                # leaving it unqueryable by JSONB operators.
+                session_updates["metadata"] = self.metadata
                 
             if result.get("suggestions"):
                 suggestions = result.get("suggestions", [])
@@ -233,13 +237,6 @@ class RouterAgent:
         if any(w in lower for w in ["hello", "hi", "hey", "help", "what can"]):
             return ["Search for a book", "Show my progress", "Help"]
         return _DEFAULT_SUGGESTIONS
-
-    def _parse_metadata(self, raw) -> dict:
-        if isinstance(raw, dict): return raw
-        if isinstance(raw, str):
-            try: return json.loads(raw)
-            except (json.JSONDecodeError, TypeError): return {}
-        return {}
 
     def _error_result(self, message: str) -> dict:
         return {

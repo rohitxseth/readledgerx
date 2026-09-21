@@ -100,5 +100,6 @@ class BookProgressMapper:
             pages_read=pages_read,
             progress_percentage=progress_percentage,
             last_read_date=row["last_read_date"],
+            last_session_at=row.get("last_session_at"),
             thumbnail_url=row.get("thumbnail_url"),
         )

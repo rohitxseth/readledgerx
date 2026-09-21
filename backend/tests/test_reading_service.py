@@ -6,6 +6,8 @@ about SQL or HTTP. All DB access goes through the fake repo.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.services.reading_service import ReadingService
@@ -94,3 +96,174 @@ async def test_sessions_for_different_users_are_isolated():
 
     assert progress_a.pages_read == 100
     assert progress_b.pages_read == 50
+
+
+# ---------------------------------------------------------------------------
+# Ranking and limiting
+#
+# Regression cover for "what is my most read book?" returning the whole list:
+# the agent had no way to rank, so it fell back to an unsorted show_progress.
+# ---------------------------------------------------------------------------
+
+async def test_sort_by_pages_read_ranks_highest_first():
+    user = uuid.uuid4()
+    small, big, mid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, small, pages_read=50)
+    await svc.add_reading_session(user, big, pages_read=200)
+    await svc.add_reading_session(user, mid, pages_read=120)
+
+    ranked = await svc.get_all_progress(user, sort_by="pages_read")
+    assert [p.pages_read for p in ranked] == [200, 120, 50]
+
+
+async def test_limit_returns_only_the_top_result():
+    """"What is my most read book?" is sort_by + limit=1."""
+    user = uuid.uuid4()
+    small, big = uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, small, pages_read=50)
+    await svc.add_reading_session(user, big, pages_read=200)
+
+    top = await svc.get_all_progress(user, sort_by="pages_read", limit=1)
+    assert len(top) == 1
+    assert top[0].book_id == big
+
+
+async def test_percent_complete_ranks_differently_from_pages_read():
+    """The two rankings must genuinely differ, or sort_by is decorative."""
+    user = uuid.uuid4()
+    short_book, long_book = uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository(page_counts={short_book: 100, long_book: 1000})
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, short_book, pages_read=90)   # 90%
+    await svc.add_reading_session(user, long_book, pages_read=300)   # 30%
+
+    by_pages = await svc.get_all_progress(user, sort_by="pages_read", limit=1)
+    by_percent = await svc.get_all_progress(user, sort_by="percent_complete", limit=1)
+
+    assert by_pages[0].book_id == long_book
+    assert by_percent[0].book_id == short_book
+
+
+async def test_sort_by_last_read_ranks_most_recent_first():
+    """"What did I read most recently?"."""
+    user = uuid.uuid4()
+    stale, fresh = uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(
+        user, stale, pages_read=10,
+        session_date=datetime.now(timezone.utc) - timedelta(days=10),
+    )
+    await svc.add_reading_session(
+        user, fresh, pages_read=10,
+        session_date=datetime.now(timezone.utc),
+    )
+
+    top = await svc.get_all_progress(user, sort_by="last_read", limit=1)
+    assert top[0].book_id == fresh
+
+
+async def test_closest_to_finishing_excludes_completed_books():
+    """"Which book am I closest to finishing?" = filter + sort + limit."""
+    user = uuid.uuid4()
+    done, nearly, early = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository(
+        page_counts={done: 100, nearly: 100, early: 100}
+    )
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, done, pages_read=100)    # 100%
+    await svc.add_reading_session(user, nearly, pages_read=80)   # 80%
+    await svc.add_reading_session(user, early, pages_read=10)    # 10%
+
+    top = await svc.get_all_progress(
+        user, filter_by="in_progress", sort_by="percent_complete", limit=1
+    )
+    assert len(top) == 1
+    assert top[0].book_id == nearly
+
+
+async def test_unknown_sort_by_is_ignored_not_fatal():
+    """The LLM fills these in; an unexpected value must not raise."""
+    user = uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, uuid.uuid4(), pages_read=10)
+    await svc.add_reading_session(user, uuid.uuid4(), pages_read=20)
+
+    assert len(await svc.get_all_progress(user, sort_by="bogus_field")) == 2
+
+
+async def test_non_positive_limit_returns_everything():
+    """limit=0 should not silently blank the user's shelf."""
+    user = uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, uuid.uuid4(), pages_read=10)
+    await svc.add_reading_session(user, uuid.uuid4(), pages_read=20)
+
+    assert len(await svc.get_all_progress(user, limit=0)) == 2
+    assert len(await svc.get_all_progress(user, limit=None)) == 2
+
+
+async def test_default_call_is_unchanged_by_the_new_parameters():
+    user = uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, uuid.uuid4(), pages_read=10)
+
+    assert len(await svc.get_all_progress(user)) == 1
+
+
+async def test_last_read_breaks_same_day_ties_by_session_time():
+    """read_on is a DATE, so two books read today tie on it.
+
+    Ordering must fall through to the newest session timestamp, otherwise
+    "what did I read most recently?" returns an arbitrary book whenever the
+    user logged more than one book on the same day.
+    """
+    user = uuid.uuid4()
+    earlier, later = uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository()
+    same_day = datetime.now(timezone.utc)
+
+    svc = _make_service(reading_repo=repo)
+    await svc.add_reading_session(user, earlier, pages_read=10, session_date=same_day)
+    await svc.add_reading_session(user, later, pages_read=10, session_date=same_day)
+
+    ranked = await svc.get_all_progress(user, sort_by="last_read")
+
+    # Same calendar day, so the date alone cannot separate them.
+    assert ranked[0].last_read_date == ranked[1].last_read_date
+    assert ranked[0].book_id == later
+
+
+async def test_last_read_still_prefers_a_newer_day_over_a_later_session():
+    """A book read yesterday must not outrank one read today."""
+    user = uuid.uuid4()
+    yesterday_book, today_book = uuid.uuid4(), uuid.uuid4()
+    repo = FakeReadingRepository()
+
+    svc = _make_service(reading_repo=repo)
+    # Logged second, but read on an older date.
+    await svc.add_reading_session(
+        user, today_book, pages_read=10, session_date=datetime.now(timezone.utc)
+    )
+    await svc.add_reading_session(
+        user, yesterday_book, pages_read=10,
+        session_date=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+
+    top = await svc.get_all_progress(user, sort_by="last_read", limit=1)
+    assert top[0].book_id == today_book

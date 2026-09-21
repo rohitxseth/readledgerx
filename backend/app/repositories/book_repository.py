@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, insert, func
+from sqlalchemy import select, insert, func, case
 from app.models import books
 from app.schemas.models import Book
 from app.domain.mappers import BookMapper
@@ -17,9 +17,32 @@ class BookRepository:
         return BookMapper.from_db(dict(row._mapping)) if row else None
 
     async def get_by_title(self, title: str) -> Book | None:
+        """Best substring match for *title*, preferring the closest one.
+
+        The match is a substring LIKE, so "Dune" also matches "Dune Messiah".
+        Rank exact titles first, then prefix matches, then the shortest
+        remaining title, so the obvious answer wins instead of whichever row
+        the planner happened to return first.
+        """
+        needle = title.lower().strip()
         # escape any LIKE-special chars so user input is matched literally
-        safe = title.lower().replace("%", "\\%").replace("_", "\\_")
-        stmt = select(books).where(func.lower(books.c.title).like(f"%{safe}%"))
+        safe = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        lowered = func.lower(books.c.title)
+
+        stmt = (
+            select(books)
+            .where(lowered.like(f"%{safe}%", escape="\\"))
+            .order_by(
+                case(
+                    (lowered == needle, 0),
+                    (lowered.like(f"{safe}%", escape="\\"), 1),
+                    else_=2,
+                ),
+                func.length(books.c.title),
+                books.c.created_at,
+            )
+            .limit(1)
+        )
         result = await self.conn.execute(stmt)
         row = result.first()
         return BookMapper.from_db(dict(row._mapping)) if row else None

@@ -17,6 +17,7 @@ from app.chat.session_manager import (
     create_session,
     get_conversation_history,
     load_session,
+    parse_metadata,
     update_session,
 )
 from app.chat.router_agent import RouterAgent
@@ -75,7 +76,7 @@ async def process_message(
         "conn": conn,
         "user": user,
         "session_id": session_id,
-        "metadata": session.get("metadata", {}),
+        "metadata": parse_metadata(session.get("metadata")),
     }
 
     # Build stream callback for WebSocket mode

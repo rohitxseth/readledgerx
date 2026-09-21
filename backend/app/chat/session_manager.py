@@ -17,6 +17,23 @@ logger = logging.getLogger(__name__)
 _ALLOWED_SESSION_COLUMNS = frozenset({"metadata", "message_count", "is_active", "name"})
 
 
+def parse_metadata(raw) -> dict:
+    """Coerce a session's metadata column into a dict.
+
+    Metadata is written with json.dumps into a JSONB column, so it reads back
+    as a JSON *string* rather than an object. Accept either shape.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 async def create_session(user_id: str, session_name: str | None = None) -> dict:
     now = datetime.now(timezone.utc)
     if not session_name:

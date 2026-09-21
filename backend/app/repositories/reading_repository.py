@@ -55,6 +55,7 @@ class ReadingRepository:
                 books.c.thumbnail_url,
                 func.sum(reading_sessions.c.pages).label("pages_read"),
                 func.max(reading_sessions.c.read_on).label("last_read_date"),
+                func.max(reading_sessions.c.created_at).label("last_session_at"),
             )
             .select_from(
                 reading_sessions.join(books, reading_sessions.c.book_id == books.c.id)
@@ -87,6 +88,7 @@ class ReadingRepository:
                 books.c.thumbnail_url,
                 func.sum(reading_sessions.c.pages).label("pages_read"),
                 func.max(reading_sessions.c.read_on).label("last_read_date"),
+                func.max(reading_sessions.c.created_at).label("last_session_at"),
             )
             .select_from(
                 reading_sessions.join(books, reading_sessions.c.book_id == books.c.id)
@@ -99,7 +101,7 @@ class ReadingRepository:
                 books.c.page_count,
                 books.c.thumbnail_url,
             )
-            .order_by(desc("last_read_date"))
+            .order_by(desc("last_read_date"), desc("last_session_at"))
         )
 
         result = await self.conn.execute(stmt)

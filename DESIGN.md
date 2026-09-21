@@ -251,9 +251,17 @@ That is a deliberate trade:
   yesterday"* cannot be answered, because that needs a lookup and then a decision
   informed by it.
 
-The bridge is `metadata_updates` — tools write small facts like `last_book_title` into
-session metadata, so limited cross-turn context survives without a second LLM call. If
-multi-step requests became a requirement, this is the decision I would revisit first.
+The bridge is `metadata_updates` — tools write small facts like `last_book_title` and
+the last set of search results into session metadata, so limited cross-turn context
+survives without a second LLM call. If multi-step requests became a requirement, this
+is the decision I would revisit first.
+
+The same constraint shapes how aggregate questions are answered. *"What is my most read
+book?"* needs ranking, and a looping agent would fetch the list and then reason over it
+in a second turn. Instead `show_progress` takes `sort_by` and `limit`, and
+`ReadingService` does the ranking. The model picks the ordering; the backend computes
+the answer. Pushing the aggregation into the service is what lets a superlative question
+stay within one round-trip — and it keeps the model from arithmetic it is bad at.
 
 ### Determinism where determinism is cheap
 
@@ -373,6 +381,10 @@ Three things follow from it that are worth having:
 
 ### What it costs
 
+- **`read_on` is a `DATE`, so the log alone cannot order two books read on the same
+  day.** Progress therefore also carries `MAX(created_at)` as `last_session_at`, purely
+  to break that tie when ranking by recency. Worth knowing that the fact table's
+  natural key is coarser than it looks.
 - **Every progress read is an aggregate.** Acceptable at this size, with
   `idx_rs_user_book` covering the grouping. At a scale where a user has tens of thousands
   of sessions, this wants a rollup table or a materialized view — reintroducing the stored
@@ -397,7 +409,8 @@ most deterministic step always runs first**:
 
 | # | Stage | Cost |
 |---|-------|------|
-| 1 | Exact/substring title lookup in the local DB | one indexed query |
+| 0 | Match against results already shown this session | in-memory |
+| 1 | Ranked substring title lookup in the local DB | one indexed query |
 | 2 | LLM normalizes the query, and flags non-book queries | one LLM call |
 | 3 | Retry the DB lookup with the normalized title | one indexed query |
 | 4 | Google Books search, top 5 English results | one HTTP call |
@@ -411,6 +424,44 @@ that anyone has already resolved costs a single indexed query with no LLM and no
 Stage 3 exists because of a specific failure: stage 2 may rewrite *"harry potter 1"* into
 a title the database already holds under its formal name. Skipping the re-check would
 search Google for a book already sitting in the local table.
+
+### Stage 0: resolving against what the user was shown
+
+Stages 1–6 resolve a title in isolation, which is wrong when the user is replying to
+something on screen. Searching *"ayn rand"* shows The Fountainhead at 740 pages;
+typing *"The Fountainhead"* used to re-enter at stage 1, where stage 2 rewrote the
+query to *"The Fountainhead by Ayn Rand"*, stage 4 fetched a different candidate set,
+and stage 5 picked a 754-page edition. The user tracked a book they never saw.
+
+The fix is to treat the last search results as part of the conversation's state.
+`execute_search_books` writes the volumes it displayed into session metadata, and
+`resolve_book` takes an optional `recent_results` and matches the title against them
+before anything else. A hit resolves on `google_volume_id`, which is the identity the
+catalogue already canonicalizes on, so the tracked row is exactly the displayed volume.
+
+Matching is ordered by how sure it is, because a loose substring test cuts both ways:
+
+1. **Exact title** — unambiguous, wins outright.
+2. **A shown title inside a longer query** — *"The Fountainhead by Ayn Rand"* names
+   *"The Fountainhead"*. The longest such title wins, being the most specific.
+3. **The query inside a shown title**, but only when it covers at least 60% of it.
+   *"fountainhead"* is 75% of *"The Fountainhead"* and matches; *"Dune"* is 33% of
+   *"Dune Messiah"* and does not. Without that floor, searching for a sequel would
+   hijack every later mention of the original.
+
+Action buttons carry the same identity. A button emitted for a resolved book includes
+its `google_books_id`, and a click resolves that id directly rather than re-matching
+on a title string, because titles are not unique.
+
+Stage 1 has the same hazard and gets the same treatment. `get_by_title` is a substring
+`LIKE`, so *"Dune"* also matches *"Dune Messiah"*; it now ranks exact titles first,
+then prefixes, then the shortest remaining title, and takes one row. Previously it
+returned whichever row the planner happened to produce first, which was not even
+stable between runs.
+
+The fallback is deliberate and total: no recent results, no match, or a payload too
+sparse to rebuild a book all drop straight through to the normal pipeline. Stage 0
+can only ever pin a volume the user actually saw; it can never block resolution.
 
 ### Two LLM calls, two different jobs
 
