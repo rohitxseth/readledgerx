@@ -1,6 +1,6 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from pydantic import Field, model_validator
-from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Placeholder values that must never reach a running app. Signing JWTs with a
 # value that appears in the repo lets anyone forge a token for any user.
@@ -21,14 +21,14 @@ class Settings(BaseSettings):
     algorithm: str = Field(default="HS256")
 
     # LLM configurations
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_deployment: Optional[str] = None
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_key: str | None = None
+    azure_openai_deployment: str | None = None
     azure_openai_api_version: str = Field(default="2024-02-15-preview")
-    openai_api_key: Optional[str] = None
+    openai_api_key: str | None = None
     openai_model: str = Field(default="gpt-4")
     llm_temperature: float = Field(default=0.0)
-    google_books_api_key: Optional[str] = None
+    google_books_api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

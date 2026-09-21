@@ -1,10 +1,12 @@
+import uuid as uuid_module
+from datetime import UTC, datetime
+
+from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, insert, update
+
+from app.domain.mappers import UserMapper
 from app.models import users
 from app.schemas.models import User
-from app.domain.mappers import UserMapper
-from datetime import datetime, timezone
-import uuid as uuid_module
 
 
 class UserRepository:
@@ -37,6 +39,6 @@ class UserRepository:
         stmt = (
             update(users)
             .where(users.c.id == user_id)
-            .values(last_login_at=datetime.now(timezone.utc))
+            .values(last_login_at=datetime.now(UTC))
         )
         await self.conn.execute(stmt)

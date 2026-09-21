@@ -5,12 +5,12 @@ Manages conversation sessions and message persistence for the chat system.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import select, insert, update, desc
+from sqlalchemy import desc, insert, select, update
 
 from app.database import async_engine
-from app.models import chat_sessions, chat_messages
+from app.models import chat_messages, chat_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def parse_metadata(raw) -> dict:
 
 
 async def create_session(user_id: str, session_name: str | None = None) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if not session_name:
         session_name = f"Chat — {now.strftime('%Y-%m-%d %H:%M')}"
 
@@ -72,7 +72,7 @@ async def load_session(session_id: str) -> dict:
             stmt = (
                 select(chat_sessions)
                 .where(chat_sessions.c.id == session_id)
-                .where(chat_sessions.c.is_active == True)
+                .where(chat_sessions.c.is_active.is_(True))
             )
             result = await conn.execute(stmt)
             row = result.first()
@@ -84,7 +84,7 @@ async def load_session(session_id: str) -> dict:
 
 async def update_session(session_id: str, updates: dict) -> bool:
     try:
-        values = {"updated_at": datetime.now(timezone.utc)}
+        values = {"updated_at": datetime.now(UTC)}
         for key, value in updates.items():
             if key not in _ALLOWED_SESSION_COLUMNS:
                 logger.warning("Skipping unknown column in session update: %s", key)
@@ -116,7 +116,7 @@ async def get_user_sessions(user_id: str, limit: int = 50) -> list:
                     chat_sessions.c.updated_at,
                 )
                 .where(chat_sessions.c.user_id == user_id)
-                .where(chat_sessions.c.is_active == True)
+                .where(chat_sessions.c.is_active.is_(True))
                 .order_by(desc(chat_sessions.c.updated_at))
                 .limit(limit)
             )
@@ -136,7 +136,7 @@ async def add_message(
 ) -> str:
     try:
         ui_json = json.dumps(ui_payload) if ui_payload else None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         async with async_engine.begin() as conn:
             stmt = (

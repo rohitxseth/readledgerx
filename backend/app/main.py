@@ -1,20 +1,29 @@
 import logging
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text as sa_text
 
-from app.routers import auth_router, books_router, chat_router, progress_router, reading_router
 from app.config.logging_config import setup_logging
-from app.config.settings import settings
 from app.core.exceptions import (
-    DomainException, EntityNotFoundError, AuthenticationError,
-    BusinessLogicError, ExternalServiceError,
+    AuthenticationError,
+    BusinessLogicError,
+    DomainException,
+    EntityNotFoundError,
+    ExternalServiceError,
 )
 from app.database import async_engine
 from app.events.event_bus import event_bus
-from app.events.user_events import UserRegisteredEvent, UserLoggedInEvent
-from app.events.handlers import on_user_registered, on_user_logged_in
+from app.events.handlers import on_user_logged_in, on_user_registered
+from app.events.user_events import UserLoggedInEvent, UserRegisteredEvent
+from app.routers import (
+    auth_router,
+    books_router,
+    chat_router,
+    progress_router,
+    reading_router,
+)
 
 setup_logging(level=logging.INFO)
 

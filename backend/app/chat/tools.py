@@ -1,11 +1,15 @@
 import logging
 import re
-from datetime import datetime, timedelta, timezone
-from app.chat import ui
-from app.core.dependencies import get_book_service, get_reading_service
+from datetime import UTC, datetime, timedelta
 from typing import get_args
 
-from app.core.exceptions import BookResolutionError, DomainException, ExternalServiceError
+from app.chat import ui
+from app.core.dependencies import get_book_service, get_reading_service
+from app.core.exceptions import (
+    BookResolutionError,
+    DomainException,
+    ExternalServiceError,
+)
 from app.schemas.models import LogAction, ProgressFilter, ProgressSort
 
 logger = logging.getLogger(__name__)
@@ -215,13 +219,13 @@ def _parse_date(date_str: str | None) -> datetime | None:
         return None
     d = date_str.lower().strip()
     if d == "today":
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     if d == "yesterday":
-        return datetime.now(timezone.utc) - timedelta(days=1)
+        return datetime.now(UTC) - timedelta(days=1)
     try:
         return datetime.fromisoformat(date_str)
     except ValueError:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
 
 async def _resolve_book(title: str, conn, context: dict | None = None, args: dict | None = None):

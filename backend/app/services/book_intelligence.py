@@ -1,7 +1,8 @@
 import logging
 import warnings
-from typing import Optional
+
 from pydantic import BaseModel, Field
+
 from app.config.llm_config import get_langchain_llm
 from app.schemas.models import Book
 
@@ -34,7 +35,7 @@ class BookIntelligenceService:
     def __init__(self):
         self.llm = get_langchain_llm()
 
-    async def normalize_query(self, raw_query: str) -> Optional[NormalizedQuery]:
+    async def normalize_query(self, raw_query: str) -> NormalizedQuery | None:
         """
         Uses an LLM to correct, normalize, or formalize a fuzzy book query.
         """
@@ -61,7 +62,7 @@ class BookIntelligenceService:
             logger.error(f"Failed to normalize query with LLM: {e}")
             return None
 
-    async def select_best_match(self, raw_query: str, results: list[Book]) -> Optional[Book]:
+    async def select_best_match(self, raw_query: str, results: list[Book]) -> Book | None:
         """
         Given a user query and a list of potentially matching Google Books results,
         uses an LLM to select the most relevant one.

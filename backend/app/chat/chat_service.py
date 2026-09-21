@@ -4,14 +4,13 @@ Flow: resolve session → persist user message → router agent →
       persist session updates → persist assistant response → send done.
 """
 
-import json
 import logging
 import uuid
 
-from app.core.exceptions import DomainException
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.schemas.chat import ChatRequest, MessageType
+from app.chat import ui
+from app.chat.router_agent import RouterAgent
 from app.chat.session_manager import (
     add_message,
     create_session,
@@ -20,8 +19,8 @@ from app.chat.session_manager import (
     parse_metadata,
     update_session,
 )
-from app.chat.router_agent import RouterAgent
-from app.chat import ui
+from app.core.exceptions import DomainException
+from app.schemas.chat import ChatRequest, MessageType
 from app.schemas.models import User
 
 logger = logging.getLogger(__name__)

@@ -4,13 +4,14 @@ Tests for AuthService, BcryptPasswordHasher, Argon2PasswordHasher, and TokenServ
 These are all pure unit tests — no DB, no HTTP.
 """
 
-import time
-import pytest
 
 from app.services.auth_service import AuthService
-from app.services.password_hasher import BcryptPasswordHasher, Argon2PasswordHasher, IPasswordHasher
+from app.services.password_hasher import (
+    Argon2PasswordHasher,
+    BcryptPasswordHasher,
+    IPasswordHasher,
+)
 from app.services.token_service import TokenService
-
 
 # ---------------------------------------------------------------------------
 # IPasswordHasher protocol conformance

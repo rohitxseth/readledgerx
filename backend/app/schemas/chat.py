@@ -1,14 +1,14 @@
-from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
+from pydantic import BaseModel, Field
 
 # ============================================================================
 # Enums
 # ============================================================================
 
 
-class MessageType(str, Enum):
+class MessageType(StrEnum):
     TEXT = "text"
     ACTION_CLICK = "action_click"
 
@@ -22,21 +22,21 @@ class ChatActionData(BaseModel):
     """Data sent when user clicks an action button."""
 
     action: str = Field(..., description="Action identifier")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Action payload")
+    payload: dict[str, Any] = Field(default_factory=dict, description="Action payload")
 
 
 class ChatRequest(BaseModel):
     """Incoming chat message from the frontend."""
 
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         None, description="Session ID, null for new session"
     )
-    session_name: Optional[str] = Field(None, description="Human-readable session name")
-    message: Optional[str] = Field(None, description="User message text")
+    session_name: str | None = Field(None, description="Human-readable session name")
+    message: str | None = Field(None, description="User message text")
     message_type: MessageType = Field(
         default=MessageType.TEXT, description="Type of message"
     )
-    action_data: Optional[ChatActionData] = Field(
+    action_data: ChatActionData | None = Field(
         None, description="Clicked action data"
     )
 
@@ -51,5 +51,5 @@ class ChatResponse(BaseModel):
 
     session_id: str
     message_id: str
-    response: Dict[str, Any]
-    suggestions: List[str] = []
+    response: dict[str, Any]
+    suggestions: list[str] = []

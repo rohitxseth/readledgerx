@@ -6,8 +6,8 @@ verify the happy path and every meaningful edge case that should fail fast.
 """
 
 import pytest
-from app.domain.value_objects import PageCount, Email
 
+from app.domain.value_objects import Email, PageCount
 
 # ---------------------------------------------------------------------------
 # PageCount

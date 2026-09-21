@@ -1,10 +1,10 @@
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import text as sa_text
 
 from app.database import async_engine
-from app.events.user_events import UserRegisteredEvent, UserLoggedInEvent
+from app.events.user_events import UserLoggedInEvent, UserRegisteredEvent
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def _write_audit_log(action: str, user_id: str, details: dict) -> None:
                     "user_id": user_id,
                     "action": action,
                     "details": json.dumps(details),
-                    "ts": datetime.now(timezone.utc),
+                    "ts": datetime.now(UTC),
                 },
             )
     except Exception:

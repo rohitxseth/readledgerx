@@ -13,17 +13,17 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.dependencies import get_db_connection, get_current_user
-from app.database import async_engine
-from app.schemas.chat import ChatRequest, ChatResponse
 from app.chat.chat_service import process_message
 from app.chat.session_manager import (
-    get_user_sessions,
     get_conversation_history,
+    get_user_sessions,
     load_session,
 )
-from app.schemas.models import User
+from app.core.dependencies import get_current_user, get_db_connection
+from app.database import async_engine
 from app.repositories import UserRepository
+from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.models import User
 from app.services.auth_service import decode_token
 
 logger = logging.getLogger(__name__)

@@ -1,9 +1,11 @@
-import httpx
 import uuid
-from app.schemas.models import Book
-from app.domain.mappers import BookMapper
-from app.core.exceptions import ExternalServiceError
+
+import httpx
+
 from app.config.settings import settings
+from app.core.exceptions import ExternalServiceError
+from app.domain.mappers import BookMapper
+from app.schemas.models import Book
 
 
 class GoogleBooksClient:
@@ -47,14 +49,14 @@ class GoogleBooksClient:
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                raise ExternalServiceError("Google Books", "Rate limit exceeded. Please try again later.")
-            raise ExternalServiceError("Google Books", f"HTTP {e.response.status_code}")
-        except httpx.TimeoutException:
-            raise ExternalServiceError("Google Books", "Request timed out")
+                raise ExternalServiceError("Google Books", "Rate limit exceeded. Please try again later.") from e
+            raise ExternalServiceError("Google Books", f"HTTP {e.response.status_code}") from e
+        except httpx.TimeoutException as e:
+            raise ExternalServiceError("Google Books", "Request timed out") from e
         except ExternalServiceError:
             raise  # don't double-wrap
         except Exception as e:
-            raise ExternalServiceError("Google Books", str(e))
+            raise ExternalServiceError("Google Books", str(e)) from e
 
     async def get_volume(self, volume_id: str) -> Book | None:
         """Fetch one volume by id. No language filter: the caller chose it."""
@@ -68,14 +70,14 @@ class GoogleBooksClient:
                 return self._to_book(response.json())
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                raise ExternalServiceError("Google Books", "Rate limit exceeded. Please try again later.")
-            raise ExternalServiceError("Google Books", f"HTTP {e.response.status_code}")
-        except httpx.TimeoutException:
-            raise ExternalServiceError("Google Books", "Request timed out")
+                raise ExternalServiceError("Google Books", "Rate limit exceeded. Please try again later.") from e
+            raise ExternalServiceError("Google Books", f"HTTP {e.response.status_code}") from e
+        except httpx.TimeoutException as e:
+            raise ExternalServiceError("Google Books", "Request timed out") from e
         except ExternalServiceError:
             raise
         except Exception as e:
-            raise ExternalServiceError("Google Books", str(e))
+            raise ExternalServiceError("Google Books", str(e)) from e
 
     def _to_book(self, item: dict) -> Book:
         # One normalisation for both paths, so a volume gets the same page count

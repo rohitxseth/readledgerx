@@ -8,7 +8,11 @@ every rule lives in the service, so the two adapters can't disagree.
 from fastapi import APIRouter, Depends, Query
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
-from app.core.dependencies import get_book_service, get_current_user, get_reading_service
+from app.core.dependencies import (
+    get_book_service,
+    get_current_user,
+    get_reading_service,
+)
 from app.schemas.models import Book, TrackingResult, User
 from app.services.book_service import BookService
 from app.services.reading_service import ReadingService

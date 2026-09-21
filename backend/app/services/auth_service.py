@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.password_hasher import IPasswordHasher, BcryptPasswordHasher
+from app.services.password_hasher import BcryptPasswordHasher, IPasswordHasher
 from app.services.token_service import TokenService
 
 

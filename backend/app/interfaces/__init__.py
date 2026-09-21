@@ -1,9 +1,9 @@
+from app.interfaces.client_interfaces import IBookSearchClient
 from app.interfaces.repository_interfaces import (
-    IUserRepository,
     IBookRepository,
     IReadingRepository,
+    IUserRepository,
 )
-from app.interfaces.client_interfaces import IBookSearchClient
 
 __all__ = [
     "IUserRepository",

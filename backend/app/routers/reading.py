@@ -4,7 +4,11 @@ import datetime as dt
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.dependencies import get_book_service, get_current_user, get_reading_service
+from app.core.dependencies import (
+    get_book_service,
+    get_current_user,
+    get_reading_service,
+)
 from app.routers.books import BookReference
 from app.schemas.models import (
     BookProgress,

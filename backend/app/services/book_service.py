@@ -3,13 +3,14 @@ BookService — orchestrates book resolution.
 """
 
 import logging
+
 from pydantic import ValidationError
 
-from app.interfaces.repository_interfaces import IBookRepository
-from app.interfaces.client_interfaces import IBookSearchClient
-from app.services.book_intelligence import BookIntelligenceService
-from app.schemas.models import Book
 from app.core.exceptions import BookResolutionError, BusinessLogicError
+from app.interfaces.client_interfaces import IBookSearchClient
+from app.interfaces.repository_interfaces import IBookRepository
+from app.schemas.models import Book
+from app.services.book_intelligence import BookIntelligenceService
 
 logger = logging.getLogger(__name__)
 

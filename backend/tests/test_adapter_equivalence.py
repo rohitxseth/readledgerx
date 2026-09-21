@@ -19,7 +19,11 @@ import httpx
 import pytest
 
 from app.chat import tools
-from app.core.dependencies import get_book_service, get_current_user, get_reading_service
+from app.core.dependencies import (
+    get_book_service,
+    get_current_user,
+    get_reading_service,
+)
 from app.main import app
 from app.services.book_service import BookService
 from app.services.reading_service import ReadingService

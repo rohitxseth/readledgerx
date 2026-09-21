@@ -1,11 +1,13 @@
-from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, insert, func, desc, delete, update
-from app.models import reading_sessions, books
-from app.schemas.models import ReadingSession, BookProgress
-from app.domain.mappers import ReadingSessionMapper, BookProgressMapper
-from app.domain.value_objects import PageCount
-from datetime import datetime, timezone
 import uuid as uuid_module
+from datetime import UTC, datetime
+
+from sqlalchemy import delete, desc, func, insert, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.domain.mappers import BookProgressMapper, ReadingSessionMapper
+from app.domain.value_objects import PageCount
+from app.models import books, reading_sessions
+from app.schemas.models import BookProgress, ReadingSession
 
 
 class ReadingRepository:
@@ -23,7 +25,7 @@ class ReadingRepository:
         PageCount(pages_read)
 
         if session_date is None:
-            session_date = datetime.now(timezone.utc)
+            session_date = datetime.now(UTC)
 
         read_on_date = (
             session_date.date() if isinstance(session_date, datetime) else session_date
@@ -191,7 +193,7 @@ class ReadingRepository:
             return {"action": "none", "pages": target_pages}
 
         if session_date is None:
-            session_date = datetime.now(timezone.utc)
+            session_date = datetime.now(UTC)
 
         read_on_date = (
             session_date.date() if isinstance(session_date, datetime) else session_date

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Callable, Type, Any
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,9 @@ class EventBus:
     """
 
     def __init__(self) -> None:
-        self._handlers: dict[Type, list[Callable]] = defaultdict(list)
+        self._handlers: dict[type, list[Callable]] = defaultdict(list)
 
-    def subscribe(self, event_type: Type, handler: Callable) -> None:
+    def subscribe(self, event_type: type, handler: Callable) -> None:
         self._handlers[event_type].append(handler)
 
     async def publish(self, event: Any) -> None:

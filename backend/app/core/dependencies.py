@@ -1,21 +1,21 @@
 import uuid
 
 from fastapi import Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.exceptions import AuthenticationError, EntityNotFoundError
 from app.database import get_db
-from app.repositories.user_repository import UserRepository
+from app.integrations.google_books import GoogleBooksClient
 from app.repositories.book_repository import BookRepository
 from app.repositories.reading_repository import ReadingRepository
-from app.integrations.google_books import GoogleBooksClient
-from app.services.book_service import BookService
-from app.services.reading_service import ReadingService
-from app.services.book_intelligence import BookIntelligenceService
+from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.book_intelligence import BookIntelligenceService
+from app.services.book_service import BookService
 from app.services.password_hasher import BcryptPasswordHasher
+from app.services.reading_service import ReadingService
 from app.services.token_service import TokenService
-from app.core.exceptions import AuthenticationError, EntityNotFoundError
 
 
 def get_auth_service() -> AuthService:
@@ -77,7 +77,7 @@ async def get_current_user(
     try:
         user_id = uuid.UUID(user_id_str) if isinstance(user_id_str, str) else user_id_str
     except (ValueError, AttributeError):
-        raise AuthenticationError("Invalid user ID format")
+        raise AuthenticationError("Invalid user ID format") from None
 
     user = await user_repo.get_by_id(user_id)
     if not user:

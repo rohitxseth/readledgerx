@@ -1,10 +1,8 @@
-import uuid
+
 import pytest
 
 from app.services.book_service import BookService
-from app.services.book_intelligence import BookIntelligenceService
 from tests.conftest import FakeBookRepository, FakeSearchClient, make_book
-
 
 # ---------------------------------------------------------------------------
 # Helpers

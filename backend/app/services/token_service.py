@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from jose import jwt, JWTError
+from jose import JWTError, jwt
 
 from app.config.settings import settings
 
@@ -20,7 +20,7 @@ class TokenService:
 
     def create_token(self, data: dict, expires_delta: timedelta | None = None) -> str:
         to_encode = data.copy()
-        expire = datetime.now(timezone.utc) + (
+        expire = datetime.now(UTC) + (
             expires_delta or timedelta(minutes=self._default_expiry_minutes)
         )
         to_encode.update({"exp": expire})

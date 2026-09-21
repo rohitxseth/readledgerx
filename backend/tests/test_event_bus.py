@@ -3,9 +3,8 @@ Tests for the EventBus — subscribe, publish, sync and async handlers,
 handler failure isolation.
 """
 
-import pytest
 from app.events.event_bus import EventBus
-from app.events.user_events import UserRegisteredEvent, UserLoggedInEvent
+from app.events.user_events import UserLoggedInEvent, UserRegisteredEvent
 
 
 async def test_handler_is_called_on_publish():

@@ -13,11 +13,12 @@ import os
 os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-not-used-in-production-0123456789")
 
 import uuid
-from datetime import datetime, timedelta, timezone
-from app.schemas.models import Book, User, ReadingSession, BookProgress
+from datetime import UTC, datetime, timedelta
+
+from app.schemas.models import Book, BookProgress, ReadingSession, User
 
 # Base for the fake's monotonic created_at values.
-_EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(2020, 1, 1, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +111,7 @@ class FakeReadingRepository:
             user_id=user_id,
             book_id=book_id,
             pages_read=pages_read,
-            session_date=session_date or datetime.now(timezone.utc),
+            session_date=session_date or datetime.now(UTC),
             created_at=_EPOCH + timedelta(seconds=self._seq),
         )
         self._sessions.append(s)
@@ -195,7 +196,7 @@ def make_user(**overrides) -> User:
     defaults = {
         "id": uuid.uuid4(),
         "email": "test@example.com",
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
     }
     defaults.update(overrides)
     return User(**defaults)

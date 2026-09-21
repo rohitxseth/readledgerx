@@ -1,19 +1,19 @@
 from sqlalchemy import (
-    MetaData,
-    Table,
+    ARRAY,
+    TIMESTAMP,
+    Boolean,
+    CheckConstraint,
     Column,
-    Integer,
     Date,
     ForeignKey,
-    Text,
-    ARRAY,
-    CheckConstraint,
-    Boolean,
     Index,
+    Integer,
+    MetaData,
+    Table,
+    Text,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy import TIMESTAMP
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 metadata = MetaData()
 

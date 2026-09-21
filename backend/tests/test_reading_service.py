@@ -6,12 +6,12 @@ about SQL or HTTP. All DB access goes through the fake repo.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.services.reading_service import ReadingService
-from tests.conftest import FakeReadingRepository, FakeBookRepository, make_book
+from tests.conftest import FakeBookRepository, FakeReadingRepository, make_book
 
 
 def _make_service(reading_repo=None, book_repo=None):
@@ -160,11 +160,11 @@ async def test_sort_by_last_read_ranks_most_recent_first():
     svc = _make_service(reading_repo=repo)
     await svc.add_reading_session(
         user, stale, pages_read=10,
-        session_date=datetime.now(timezone.utc) - timedelta(days=10),
+        session_date=datetime.now(UTC) - timedelta(days=10),
     )
     await svc.add_reading_session(
         user, fresh, pages_read=10,
-        session_date=datetime.now(timezone.utc),
+        session_date=datetime.now(UTC),
     )
 
     top = await svc.get_all_progress(user, sort_by="last_read", limit=1)
@@ -236,7 +236,7 @@ async def test_last_read_breaks_same_day_ties_by_session_time():
     user = uuid.uuid4()
     earlier, later = uuid.uuid4(), uuid.uuid4()
     repo = FakeReadingRepository()
-    same_day = datetime.now(timezone.utc)
+    same_day = datetime.now(UTC)
 
     svc = _make_service(reading_repo=repo)
     await svc.add_reading_session(user, earlier, pages_read=10, session_date=same_day)
@@ -258,11 +258,11 @@ async def test_last_read_still_prefers_a_newer_day_over_a_later_session():
     svc = _make_service(reading_repo=repo)
     # Logged second, but read on an older date.
     await svc.add_reading_session(
-        user, today_book, pages_read=10, session_date=datetime.now(timezone.utc)
+        user, today_book, pages_read=10, session_date=datetime.now(UTC)
     )
     await svc.add_reading_session(
         user, yesterday_book, pages_read=10,
-        session_date=datetime.now(timezone.utc) - timedelta(days=1),
+        session_date=datetime.now(UTC) - timedelta(days=1),
     )
 
     top = await svc.get_all_progress(user, sort_by="last_read", limit=1)

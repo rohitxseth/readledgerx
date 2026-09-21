@@ -6,10 +6,14 @@ If a DB column is ever renamed, these tests fail fast.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from app.domain.mappers import UserMapper, BookMapper, ReadingSessionMapper, BookProgressMapper
-
+from app.domain.mappers import (
+    BookMapper,
+    BookProgressMapper,
+    ReadingSessionMapper,
+    UserMapper,
+)
 
 # ---------------------------------------------------------------------------
 # UserMapper
@@ -20,7 +24,7 @@ def test_user_mapper_from_db_basic():
         "id": uuid.uuid4(),
         "email": "test@example.com",
         "password_hash": "hashed",
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
     }
     user = UserMapper.from_db(row)
     assert user.email == "test@example.com"
@@ -32,7 +36,7 @@ def test_user_mapper_handles_null_password():
         "id": uuid.uuid4(),
         "email": "oauth@example.com",
         "password_hash": None,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
     }
     user = UserMapper.from_db(row)
     assert user.hashed_password is None
@@ -55,7 +59,7 @@ def _book_row(**overrides):
         "google_volume_id": "abc123",
         "categories": ["Science Fiction"],
         "language": "en",
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
     }
     base.update(overrides)
     return base
@@ -112,7 +116,7 @@ def test_progress_percentage_calculation():
         "authors": ["James Clear"],
         "total_pages": 200,
         "pages_read": 100,
-        "last_read_date": datetime.now(timezone.utc),
+        "last_read_date": datetime.now(UTC),
         "thumbnail_url": None,
     }
     progress = BookProgressMapper.from_db(row)
@@ -127,7 +131,7 @@ def test_progress_percentage_no_divide_by_zero():
         "authors": [],
         "total_pages": None,
         "pages_read": 50,
-        "last_read_date": datetime.now(timezone.utc),
+        "last_read_date": datetime.now(UTC),
         "thumbnail_url": None,
     }
     # Should not raise — mapper defaults total_pages to 1 when None
@@ -145,8 +149,8 @@ def test_reading_session_mapper_from_db():
         "user_id": uuid.uuid4(),
         "book_id": uuid.uuid4(),
         "pages": 75,           # DB column name
-        "read_on": datetime.now(timezone.utc),  # DB column name
-        "created_at": datetime.now(timezone.utc),
+        "read_on": datetime.now(UTC),  # DB column name
+        "created_at": datetime.now(UTC),
     }
     session = ReadingSessionMapper.from_db(row)
     assert session.pages_read == 75

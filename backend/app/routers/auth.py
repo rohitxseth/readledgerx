@@ -1,13 +1,15 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends, status
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.exc import IntegrityError
-from app.core.dependencies import get_user_repository, get_auth_service
-from app.repositories import UserRepository
-from app.services.auth_service import AuthService
+
+from app.core.dependencies import get_auth_service, get_user_repository
 from app.domain.value_objects import Email
 from app.events.event_bus import event_bus
-from app.events.user_events import UserRegisteredEvent, UserLoggedInEvent
+from app.events.user_events import UserLoggedInEvent, UserRegisteredEvent
+from app.repositories import UserRepository
+from app.services.auth_service import AuthService
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ async def register(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid email address",
-        )
+        ) from None
 
     logger.info(f"Registration attempt for: {validated_email}")
 
@@ -67,7 +69,7 @@ async def register(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
-        )
+        ) from None
 
     token = auth_service.create_access_token({"sub": str(user.id)})
     await event_bus.publish(UserRegisteredEvent(user_id=str(user.id), email=user.email))

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas.models import User, Book, ReadingSession, BookProgress
+from app.schemas.models import Book, BookProgress, ReadingSession, User
 
 
 class UserMapper:
@@ -47,7 +47,6 @@ class BookMapper:
 
     @staticmethod
     def from_google_books(data: dict, fallback_id) -> Book:
-        from uuid import UUID
         volume_info = data.get("volumeInfo", {})
         pub_date = volume_info.get("publishedDate")
         if pub_date is not None:

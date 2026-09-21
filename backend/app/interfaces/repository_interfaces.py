@@ -4,7 +4,7 @@ import uuid as uuid_module
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from app.schemas.models import User, Book, ReadingSession, BookProgress
+from app.schemas.models import Book, BookProgress, ReadingSession, User
 
 
 @runtime_checkable

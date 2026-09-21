@@ -11,14 +11,14 @@ import asyncio
 import json
 import logging
 import re
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from app.chat import ui
 from app.chat.prompt import SYSTEM_PROMPT
 from app.chat.session_manager import parse_metadata
 from app.chat.tools import TOOL_DEFINITIONS, execute_tool
-from app.chat import ui
 from app.config.llm_config import get_langchain_llm
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class RouterAgent:
         self,
         session: dict,
         context: dict,
-        stream_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
+        stream_callback: Callable[[dict], Awaitable[None]] | None = None,
     ):
         self.session = session
         self.context = context
@@ -204,7 +204,7 @@ class RouterAgent:
 
         return self._error_result("I'm having trouble processing your request. Please try again.")
 
-    def _intercept(self, user_input: dict) -> Optional[dict]:
+    def _intercept(self, user_input: dict) -> dict | None:
         """Answer requests that have a fixed reply, without calling the LLM."""
         if user_input.get("message_type") == "action_click":
             action_data = user_input.get("action_data") or {}

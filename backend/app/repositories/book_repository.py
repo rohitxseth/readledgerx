@@ -1,9 +1,11 @@
+import uuid as uuid_module
+
+from sqlalchemy import case, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy import select, insert, func, case
+
+from app.domain.mappers import BookMapper
 from app.models import books
 from app.schemas.models import Book
-from app.domain.mappers import BookMapper
-import uuid as uuid_module
 
 
 class BookRepository:

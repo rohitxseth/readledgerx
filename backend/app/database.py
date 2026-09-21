@@ -1,4 +1,5 @@
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.config.settings import settings
 
 DATABASE_URL = settings.database_url

@@ -1,11 +1,17 @@
 """ReadingService — business logic for reading sessions and progress."""
 
-import uuid as uuid_module
 import logging
+import uuid as uuid_module
 from datetime import date, datetime
 from typing import get_args
 
-from app.interfaces.repository_interfaces import IReadingRepository, IBookRepository
+from app.core.exceptions import (
+    BusinessLogicError,
+    EntityNotFoundError,
+    ReadingLimitError,
+)
+from app.domain.value_objects import PageCount
+from app.interfaces.repository_interfaces import IBookRepository, IReadingRepository
 from app.schemas.models import (
     Book,
     BookProgress,
@@ -17,8 +23,6 @@ from app.schemas.models import (
     TrackingResult,
     UndoResult,
 )
-from app.core.exceptions import BusinessLogicError, EntityNotFoundError, ReadingLimitError
-from app.domain.value_objects import PageCount
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +276,7 @@ class ReadingService:
         try:
             PageCount(pages)
         except (TypeError, ValueError) as e:
-            raise BusinessLogicError(str(e))
+            raise BusinessLogicError(str(e)) from e
 
     def _amount(
         self, book: Book, action: str, pages: int | None, percentage: float | None
