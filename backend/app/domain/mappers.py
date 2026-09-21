@@ -96,7 +96,7 @@ class BookProgressMapper:
             book_id=row["book_id"],
             title=row["title"],
             authors=authors or [],
-            total_pages=row["total_pages"],
+            total_pages=total_pages,
             pages_read=pages_read,
             progress_percentage=progress_percentage,
             last_read_date=row["last_read_date"],

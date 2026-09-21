@@ -1,6 +1,8 @@
 # ReadLedger — Low-Level Design
 
-This document covers the key design decisions made in ReadLedger's backend and the reasoning behind them.
+This document covers the key design decisions in ReadLedger's backend, the reasoning
+behind each one, and — where it matters — what the decision costs and when I would
+reverse it.
 
 ---
 
@@ -13,7 +15,13 @@ Routers → Services → Repositories → Database
          (Protocols)   (Protocols)
 ```
 
-Every layer talks to the layer below it through an interface, not a concrete class. Services don't know what database you're using. Repositories don't know what business logic runs on top of them.
+Every layer talks to the layer below it through an interface, not a concrete class.
+Services don't know what database you're using. Repositories don't know what business
+logic runs on top of them.
+
+The through-line for most of what follows: **push decisions to the boundary, keep the
+middle pure.** Validation happens at construction, I/O happens behind interfaces, and
+the business logic in between is ordinary Python that runs in milliseconds under test.
 
 ---
 
@@ -21,7 +29,8 @@ Every layer talks to the layer below it through an interface, not a concrete cla
 
 **Files:** `app/interfaces/repository_interfaces.py`, `app/interfaces/client_interfaces.py`
 
-Python's `typing.Protocol` lets you define structural interfaces — a class satisfies a Protocol just by having the right method signatures, with no inheritance required.
+Python's `typing.Protocol` lets you define structural interfaces — a class satisfies a
+Protocol just by having the right method signatures, with no inheritance required.
 
 ```python
 # Before: service was tightly coupled to concrete classes
@@ -41,9 +50,54 @@ class BookService:
         ...
 ```
 
-The concrete wiring happens in exactly one place — `app/core/dependencies.py`. Every other file in the codebase only knows about interfaces.
+### Why Protocol and not ABC?
 
-**Why Protocol over ABC?** With ABCs, your fake/test classes have to import from production modules to inherit. With Protocol, a `FakeBookRepository` in tests can satisfy `IBookRepository` without importing it — just by having the same methods. This breaks the dependency entirely.
+Both give you dependency inversion. The difference is **which direction the import
+arrow points**, and that turns out to matter.
+
+With an ABC, a fake has to inherit from the abstraction, so the test module must import
+from production code:
+
+```python
+from app.interfaces.repository_interfaces import IBookRepository  # test → production
+
+class FakeBookRepository(IBookRepository):   # inheritance couples them
+    ...
+```
+
+With a Protocol, the fake declares nothing and imports nothing:
+
+```python
+class FakeBookRepository:                    # no import, no base class
+    async def get_by_id(self, book_id): ...
+    async def get_by_title(self, title): ...
+```
+
+`tests/conftest.py` is written this way on purpose — it defines three fake repositories
+and a fake search client, and **none of them import the interfaces they satisfy**. The
+conformance is checked by the type checker statically, and by the fact that the service
+under test actually calls the methods.
+
+That yields three concrete properties:
+
+1. Services depend on abstractions, not on a database driver — **DIP**
+2. Swapping an implementation (in-memory for tests, OpenLibrary for Google Books)
+   requires zero changes to service code — **OCP**
+3. Unit tests need no database, no network, and no mocking framework — **testability**
+
+The whole `backend/tests` suite runs in about two seconds with no I/O of any kind. That
+is the payoff, and it is the reason to prefer the structural interface.
+
+**The honest caveat:** `@runtime_checkable` makes `isinstance(x, IBookRepository)` work,
+but it only verifies that *method names* exist — it does not check signatures, argument
+types, or return types. A fake with the right names and wrong arguments passes
+`isinstance` and fails at call time. Static checking is what actually enforces the
+contract here; the runtime check is a convenience, not a guarantee. It is worth knowing
+that before leaning on it.
+
+**When I would use an ABC instead:** when there is real shared behaviour to inherit, not
+just a contract to satisfy. Protocols give you a shape; ABCs give you a shape plus an
+implementation. Nothing in this codebase needed the second one.
 
 ---
 
@@ -51,15 +105,10 @@ The concrete wiring happens in exactly one place — `app/core/dependencies.py`.
 
 **Files:** `app/domain/mappers.py`
 
-Mappers are pure static classes responsible for one thing: converting a raw DB row (or API response) into a domain model.
+Mappers are pure static classes responsible for one thing: converting a raw DB row (or
+API response) into a domain model.
 
 ```python
-# Domain model is just data
-class User(BaseModel):
-    id: UUID
-    email: str
-
-# Mapper handles the DB → domain conversion
 class UserMapper:
     @staticmethod
     def from_db(row: dict) -> User:
@@ -70,7 +119,14 @@ class UserMapper:
         )
 ```
 
-The key benefit: if a DB column gets renamed, you change the mapper — nothing else. The domain model doesn't need to know about DB column names, and the repository doesn't need to know how to construct domain objects.
+The key benefit: if a DB column is renamed, you change the mapper — nothing else. The
+domain model doesn't know about DB column names, and the repository doesn't know how to
+construct domain objects.
+
+That `or` is the pattern doing real work: the database column is `password_hash`, the
+domain field is `hashed_password`, and exactly one file knows that. The same applies to
+`reading_sessions`, where the columns are `pages` and `read_on` but the domain speaks in
+`pages_read` and `session_date`.
 
 ---
 
@@ -78,14 +134,23 @@ The key benefit: if a DB column gets renamed, you change the mapper — nothing 
 
 **Files:** `app/domain/value_objects.py`
 
-Value objects enforce domain invariants at construction time. They fail fast, at the boundary, rather than letting invalid data propagate silently through the system.
+Value objects enforce domain invariants at construction time. They fail fast, at the
+boundary, rather than letting invalid data propagate silently through the system.
 
 ```python
-PageCount(-1)    # raises ValueError immediately
+PageCount(-1)     # raises ValueError immediately
 Email("notvalid") # raises ValueError immediately
 ```
 
-`PageCount` is used in `ReadingRepository.create_session()` to validate pages before any DB call is made. `Email` is validated in the registration endpoint before we even check if the user exists.
+`PageCount` is used in `ReadingRepository.create_session()` to validate pages before any
+DB call is made. `Email` is validated in the registration endpoint before we even check
+whether the user exists.
+
+The rule being encoded: **the database's CHECK constraints are a backstop, not the
+validation layer.** A `CHECK (pages >= 0)` violation surfaces as an `IntegrityError`
+somewhere deep in a driver, with no useful message for the caller. `PageCount(-1)` fails
+at the point the bad value entered the system, with a message that names the problem.
+Both exist; they are defending different things.
 
 ---
 
@@ -105,7 +170,13 @@ class Argon2PasswordHasher:   # memory-hard — stronger against GPU brute-forci
     ...
 ```
 
-`AuthService` doesn't know which algorithm it uses — it just calls `self._hasher.hash()`. Switching from bcrypt to Argon2 is changing one line in `dependencies.py`.
+`AuthService` doesn't know which algorithm it uses — it just calls `self._hasher.hash()`.
+Switching from bcrypt to Argon2 is a one-line change in `dependencies.py`.
+
+**Caveat worth stating:** swapping the hasher only affects *new* hashes. Existing bcrypt
+hashes in the database stay bcrypt, and a real migration means verifying against the old
+algorithm and transparently re-hashing on successful login. The Strategy pattern makes
+the swap possible; it does not make it free.
 
 ---
 
@@ -113,7 +184,9 @@ class Argon2PasswordHasher:   # memory-hard — stronger against GPU brute-forci
 
 **Files:** `app/events/event_bus.py`, `app/events/user_events.py`, `app/events/handlers.py`
 
-The event bus decouples side-effects from core flows. When a user registers, the registration handler publishes a `UserRegisteredEvent`. Anything that needs to react to registration — audit logging, welcome emails, analytics — subscribes independently.
+The event bus decouples side-effects from core flows. When a user registers, the
+registration handler publishes a `UserRegisteredEvent`. Anything that needs to react —
+audit logging, welcome emails, analytics — subscribes independently.
 
 ```python
 # Registration flow: no knowledge of what happens next
@@ -124,24 +197,73 @@ async def on_user_registered(event: UserRegisteredEvent):
     await _write_audit_log("user_registered", event.user_id, ...)
 ```
 
-Events are frozen dataclasses — immutable and typed. Handlers are registered at startup in `main.py`. Adding a new side-effect is adding one function and one `subscribe()` call. The registration router never changes.
+Events are frozen dataclasses — immutable and typed. Handlers are registered at startup
+in `main.py`. Adding a new side-effect means adding one function and one `subscribe()`
+call; the registration router never changes.
 
-One design constraint worth noting: the event bus is in-process. It doesn't survive restarts and has no retry logic. For a production system with reliability requirements, you'd replace it with a message queue (SQS, Kafka, etc.) — but the subscriber interface in the application code would stay the same.
+### What this implementation is not
+
+Being precise about the limits matters more than the pattern itself:
+
+- **It is in-process.** Nothing survives a restart, and there is no retry. A handler that
+  fails has failed permanently.
+- **`publish()` is sequential and awaited**, so a slow handler adds latency directly to
+  the user's request. It looks asynchronous; it is not decoupled in time.
+- **Handler exceptions are swallowed and logged.** That keeps a failing audit write from
+  breaking registration, which is the right call for audit — but it means a handler can
+  fail silently forever, and nothing surfaces it.
+- **Handlers open their own database connections**, so they cannot see the caller's
+  uncommitted transaction. Publishing an event *before* the surrounding request commits
+  means a handler may observe a row that does not exist yet. Events should be published
+  after commit, or handlers should join the caller's transaction.
+
+For a production system with reliability requirements this becomes a real queue (SQS,
+Kafka) with retries and a dead-letter queue — but the subscriber interface in application
+code stays the same, which is the point of routing side-effects through a bus at all.
 
 ---
 
 ## 6. LangChain Router Agent
 
-**Files:** `app/chat/router_agent.py`, `app/chat/tools.py`
+**Files:** `app/chat/router_agent.py`, `app/chat/tools.py`, `app/chat/prompt.py`
 
-The chat interface is backed by an LLM agent that uses tool-calling (OpenAI function calling format) to map user intent to backend operations. The flow for each message:
+The chat interface is backed by an LLM agent that uses tool-calling to map user intent
+onto backend operations. Per message:
 
-1. Build message history (system prompt + last N turns)
-2. Stream from LLM with tools bound
-3. If LLM returns a tool call → execute the tool, return structured BDUI response
-4. If LLM returns text → return it as a text element
+1. Build message history (system prompt + last 20 turns)
+2. Stream from the LLM with four tool schemas bound
+3. If the LLM returns a tool call → execute it, return structured BDUI elements
+4. If the LLM returns text → wrap it as a text element
 
-Tool definitions are JSON schemas that tell the LLM what parameters each tool expects. The LLM fills in the arguments from context; the backend executes.
+### The loop is deliberately single-pass
+
+Most agent frameworks run a loop: call tool → feed the result back to the LLM → let it
+decide what to do next → repeat until it stops. This one does not. Tool results are
+rendered and returned to the user directly, and the LLM never sees them.
+
+That is a deliberate trade:
+
+- **What it buys:** exactly one LLM round-trip per message, so latency and cost are
+  bounded and predictable. No runaway loops, no token budget that grows with tool output.
+  Tool results reach the user as structured cards rather than as an LLM paraphrase of
+  structured cards — which also removes any opportunity for the model to garble a number.
+- **What it costs:** no multi-step reasoning. *"Log 40 pages of whatever I was reading
+  yesterday"* cannot be answered, because that needs a lookup and then a decision
+  informed by it.
+
+The bridge is `metadata_updates` — tools write small facts like `last_book_title` into
+session metadata, so limited cross-turn context survives without a second LLM call. If
+multi-step requests became a requirement, this is the decision I would revisit first.
+
+### Determinism where determinism is cheap
+
+`"help"` and its variants are intercepted before the LLM is called at all and answered
+with a fixed help card. A known question with a fixed answer should not cost a network
+round-trip or risk a rephrasing.
+
+The same instinct shapes the retry policy: two attempts with a short backoff, then a
+plain error element. An LLM call is treated as what it is — an unreliable network
+dependency — rather than as a function call.
 
 ---
 
@@ -162,7 +284,163 @@ Chat responses are structured JSON element trees, not raw HTML or markdown strin
 }
 ```
 
-The frontend's `BduiRenderer` switches on `element.type` and renders the appropriate React component. This means the backend controls the entire UI experience — new widget types only require a backend change and a new case in the renderer. No feature flags, no coordinated deploys.
+The frontend's `BduiRenderer` switches on `element.type` and renders the matching React
+component.
+
+### Why not just return markdown?
+
+That was the obvious alternative, and rejecting it is the actual decision here.
+
+A chat reply in this app is not prose — it is *"here is a progress bar, a book cover, and
+two things you can do next."* Markdown can only describe that as text. Getting a real
+progress bar out of a markdown reply means the client has to pattern-match the model's
+output to decide what widget to draw, which makes the UI a function of LLM phrasing. It
+breaks the moment the model words something differently.
+
+The element tree inverts that. The backend already knows it just logged 40 of 412 pages,
+so it says `book_progress` and the client draws a progress bar. **The LLM's phrasing
+affects only the text element, never the structure of the response.** An LLM that has a
+bad day produces an awkward sentence next to a correct progress card, rather than a
+missing progress card.
+
+### What it buys
+
+- **New widgets don't need a coordinated deploy.** A new element type is a backend change
+  plus one `case` in the renderer — no feature flags, no version negotiation.
+- **Interaction is uniform.** A button carries `action` and `payload`; clicking it sends
+  `message_type: "action_click"` back through the same WebSocket, and the agent handles it
+  as another turn. Typing and clicking share one code path rather than one path plus a
+  command API.
+- **Responses are replayable.** Elements are persisted in `chat_messages.ui_payload`, so
+  reloading a session re-renders the original cards instead of a flattened transcript.
+
+### What it costs
+
+- **The backend owns presentation now.** A copy tweak or a spacing change becomes a
+  backend deploy. The clean layering above stops at `ui.py`, which is a presentation
+  concern living in the service tier.
+- **Version skew is a real risk.** An old client that doesn't know an element type renders
+  nothing. `BduiRenderer` returning `null` for unknown types makes that a silent blank
+  rather than a crash — the failure mode is chosen, but it is still a failure mode.
+- **The payload is now a schema.** Old rows in `ui_payload` must stay renderable forever,
+  so element shapes are effectively an append-only contract. Renaming a field means
+  migrating history.
+- **It only pays off for generated UI.** For a CRUD screen this would be pure overhead.
+  It earns its keep here because the server decides what the response *is*, turn by turn.
+
+---
+
+## 8. Event-Sourced Reading Progress
+
+**Files:** `backend/init_db.sql`, `app/repositories/reading_repository.py`
+
+**There is no `progress` column anywhere in the schema.** `reading_sessions` is the fact
+table — one row per *"I read N pages on date D"* — and every number the UI displays is
+derived from it at read time:
+
+```sql
+SELECT books.page_count           AS total_pages,
+       SUM(reading_sessions.pages) AS pages_read,
+       MAX(reading_sessions.read_on) AS last_read_date
+FROM reading_sessions JOIN books ON ...
+GROUP BY books.id
+```
+
+### Why derive instead of store
+
+A stored `pages_read` counter and the sessions that produced it are two sources of truth
+for one fact, and they drift. Every write path has to remember to update both; a failure
+between the two writes leaves them inconsistent, and nothing detects it because each
+looks fine on its own. The bug that results — *"my total says 340 but my sessions add up
+to 290"* — is invisible until a user reports it, and unfixable after the fact because you
+cannot tell which number was wrong.
+
+Deriving the total makes that class of bug unrepresentable. The sum **is** the progress;
+there is nothing for it to disagree with.
+
+Three things follow from it that are worth having:
+
+- **Undo is natural.** *"I meant 20, not 40"* walks the sessions backwards from the most
+  recent and trims them. With a stored counter it is arithmetic on a number nobody can
+  audit; here it is an operation on the records that produced it.
+- **History is free.** Reading streaks, pages-per-week, "what was I reading in March" are
+  all queries against a table that already exists, with no migration and no new writes.
+  None of that is built yet — the point is that the schema does not stand in the way.
+- **Tracking with zero progress is representable.** `start_tracking` inserts a session of
+  `pages = 0`, which is why "tracked but not started" is a real state and the
+  `not_started` filter has something to filter. With a counter, "0" and "absent" are the
+  same value.
+
+### What it costs
+
+- **Every progress read is an aggregate.** Acceptable at this size, with
+  `idx_rs_user_book` covering the grouping. At a scale where a user has tens of thousands
+  of sessions, this wants a rollup table or a materialized view — reintroducing the stored
+  total deliberately, as a *cache* that can be rebuilt from the log, rather than as a
+  second source of truth.
+- **The log is not actually append-only, and that is a real inconsistency.** `reduce` and
+  `set` DELETE and UPDATE historical rows. A strict event-sourced design would append a
+  compensating negative entry instead, preserving the audit trail and keeping the
+  aggregate a pure `SUM`. The current approach destroys history to keep the sum correct.
+  The schema comment calls the table append-only; today the write paths do not honour
+  that. Appending corrections is the change I would make first.
+
+---
+
+## 9. The Book Resolution Pipeline
+
+**Files:** `app/services/book_service.py`, `app/services/book_intelligence.py`
+
+Turning *"harry potter 1"* into one specific Google Books volume is the hardest problem
+in the app. `resolve_book()` handles it in six stages, ordered so that **the cheapest and
+most deterministic step always runs first**:
+
+| # | Stage | Cost |
+|---|-------|------|
+| 1 | Exact/substring title lookup in the local DB | one indexed query |
+| 2 | LLM normalizes the query, and flags non-book queries | one LLM call |
+| 3 | Retry the DB lookup with the normalized title | one indexed query |
+| 4 | Google Books search, top 5 English results | one HTTP call |
+| 5 | LLM selects the best of the 5 candidates | one LLM call |
+| 6 | Dedupe on `google_volume_id`, then persist | one indexed query |
+
+The ordering is the design. An LLM call is the most expensive and least predictable step
+available, so it is never the first thing tried — stages 1 and 3 are a cache, and a title
+that anyone has already resolved costs a single indexed query with no LLM and no HTTP.
+
+Stage 3 exists because of a specific failure: stage 2 may rewrite *"harry potter 1"* into
+a title the database already holds under its formal name. Skipping the re-check would
+search Google for a book already sitting in the local table.
+
+### Two LLM calls, two different jobs
+
+They are deliberately not merged into one prompt. **Normalization** (stage 2) is
+open-ended generation — it turns a fuzzy string into a canonical title and decides
+whether the request is about a book at all. **Selection** (stage 5) is constrained
+classification — given five concrete candidates, return an index. Both use structured
+output (`with_structured_output`) so the response is a validated Pydantic model rather
+than a string to be parsed.
+
+Keeping them separate means stage 5 cannot invent a book: it returns an index into a list
+the backend already holds, or `-1`. The model chooses among real options rather than
+producing a title that may not exist. Merging them would trade that guarantee for one
+saved round-trip.
+
+### Degrading without an LLM
+
+If no LLM credentials are configured, `get_langchain_llm()` returns `None` and both
+stages degrade rather than fail — stage 2 passes the raw query through, stage 5 returns
+the first search result. Resolution keeps working; it just gets dumber. The chat agent,
+by contrast, requires the LLM and says so plainly. That asymmetry is intentional: book
+lookup has a sensible non-AI fallback, and intent routing does not.
+
+### Canonicalizing on volume ID
+
+Stage 6 deduplicates on `google_volume_id`, which carries a `UNIQUE` constraint, rather
+than on title. `books` is a **global catalogue shared by all users**, not a per-user list,
+so two users who reach the same book by different phrasings converge on one row — and
+their reading sessions point at the same book. Title-based dedup would have produced
+near-duplicate rows for every spelling variation.
 
 ---
 
@@ -181,7 +459,38 @@ def get_book_service(conn) -> BookService:
     )
 ```
 
-This is the only place in the entire codebase that mentions concrete class names together with their interfaces. Every other file talks in terms of protocols and abstractions.
+This is the only module that names concrete classes alongside the interfaces they
+satisfy. Everything else talks in abstractions.
+
+**Where this leaks today:** `app/chat/tools.py` imports `get_book_service` and
+`get_reading_service` and calls them directly as factories, outside of FastAPI's
+dependency system. It works — they are ordinary functions — but it means those providers
+serve two roles at once, and the chat layer reaches into the DI wiring instead of being
+handed its dependencies. The clean fix is to separate the factory from the FastAPI
+provider and have the tool context carry pre-built services.
+
+---
+
+## Other Decisions Worth Naming
+
+**SQLAlchemy Core rather than the ORM.** Every query here is a deliberate SELECT with an
+explicit GROUP BY. Core gives composable, type-checked SQL without a session cache,
+identity map, or lazy-loading — none of which this app wants, and all of which introduce
+implicit queries that are hard to reason about under async. The trade is writing the
+joins by hand. For a read pattern this specific, that is the better side of the trade.
+
+**`init_db.sql` rather than migrations.** The schema is applied once by the Postgres
+entrypoint. That is fine for a project with no production data and no second
+environment, and it is honestly the wrong tool the moment either exists — there is no
+way to evolve a schema in place. Alembic is the correct answer for anything beyond this;
+the current setup is chosen for reviewer setup time, not because migrations were
+considered unnecessary.
+
+**JWT rather than server-side sessions.** Tokens carry `sub` and `exp` and nothing else,
+so authenticating a request is a signature check plus one user lookup, with no session
+store. The cost is that logout cannot invalidate a live token — seven days is a long
+window for a leaked one. A production version wants shorter expiry plus refresh tokens,
+or a revocation list.
 
 ---
 
@@ -197,3 +506,5 @@ This is the only place in the entire codebase that mentions concrete class names
 | Observer / Event Bus | `events/` |
 | Tool-calling Agent | `chat/router_agent.py` |
 | Backend-Driven UI | `chat/ui.py` + `BduiRenderer.jsx` |
+| Event sourcing (derived state) | `reading_sessions` → `BookProgress` |
+| Layered resolution w/ LLM fallback | `services/book_service.py` |

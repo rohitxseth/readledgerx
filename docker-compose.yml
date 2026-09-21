@@ -1,7 +1,6 @@
 services:
   postgres-db:
     image: postgres:15-alpine
-    container_name: readledger-postgres
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -10,29 +9,49 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Applied only on first start, when the data volume is empty.
       - ./backend/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d readledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - readledger-network
 
   readledger-backend:
     build: ./backend
-    container_name: readledger-backend
+    # Secrets come from backend/.env (gitignored). Copy backend/.env.example first.
+    env_file:
+      - ./backend/.env
+    environment:
+      # Overrides whatever DATABASE_URL is in .env: inside the compose network
+      # the database is reachable as `postgres-db:5432`, not localhost:5433.
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres-db:5432/readledger
     ports:
       - "8000:8000"
-    networks:
-      - readledger-network
     volumes:
       - ./backend:/app
+      # Keep the container's own .venv — the host one is built for the host OS
+      # and would shadow it through the bind mount above.
+      - /app/.venv
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    networks:
+      - readledger-network
 
   readledger-frontend:
     build: ./frontend
-    container_name: readledger-frontend
     ports:
       - "5173:5173"
-    networks:
-      - readledger-network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - readledger-backend
+    networks:
+      - readledger-network
 
 networks:
   readledger-network:
