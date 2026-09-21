@@ -4,7 +4,6 @@ A reading tracker you talk to. An LLM decides which operation a message means; d
 
 ![ReadLedger demo](docs/demo.gif)
 
-Full demo (90s): <!-- upload MP4 via GitHub web editor -->
 
 ## What it does
 
