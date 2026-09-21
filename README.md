@@ -1,26 +1,23 @@
 # ReadLedger
 
-**A reading tracker you talk to.** Tell it *"I read 40 pages of Dune last night"* and it finds the book, logs the pages, and streams back a progress card — no forms, no dropdowns.
-
----
+A reading tracker you talk to. An LLM decides which operation a message means; deterministic domain services, shared with a REST API, do the work.
 
 ![ReadLedger demo](docs/demo.gif)
 
----
+Full demo (90s): <!-- upload MP4 via GitHub web editor -->
 
 ## What it does
 
-- **Log reading in plain English** — *"read 40 pages of Dune"*, *"I'm at 25% of Sapiens"*, *"undo that"*
-- **Resolves fuzzy book titles** — *"harry potter 1"* becomes the right Google Books volume, via a six-stage pipeline that puts the LLM only where deterministic matching fails
-- **Tracks progress** — pages read and percent complete, per book or across the whole shelf
-- **Streams over WebSocket** — LLM tokens render as they arrive
-- **Renders backend-driven UI** — the server returns UI element trees (progress cards, buttons); the React client is a dumb renderer
+- Logs reading from plain sentences: *"read 40 pages of Dune"*, *"I'm at 25% of Sapiens"*, *"undo that"*.
+- Resolves loose titles like *"harry potter 1"* to one specific Google Books volume, and stores it in a shared catalogue.
+- Answers progress questions: *"show my progress"*, *"which book am I closest to finishing?"*, *"what did I read most recently?"*.
+- Searches by author, title or topic: *"books by Ayn Rand"*, *"books about stoicism"*.
+- Streams replies over a WebSocket as typed UI elements (progress cards, book lists, buttons) that a React client renders.
+- Exposes the same operations as a REST API, documented at `/docs`.
 
 ## Quickstart
 
-**Prerequisites:** Docker, and an Azure OpenAI or OpenAI API key. For the local (non-Docker) path you also need Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 18+.
-
-### 1. Clone and configure
+Prerequisites: Docker with Compose, an Azure OpenAI deployment or an OpenAI API key, and a Google Books API key.
 
 ```bash
 git clone https://github.com/rohitxseth/readledgerx.git
@@ -28,372 +25,283 @@ cd readledgerx
 cp backend/.env.example backend/.env
 ```
 
-Open `backend/.env` and set, at minimum:
+Edit `backend/.env`:
 
-| Variable | Why it matters |
-|----------|----------------|
-| `JWT_SECRET_KEY` | **Required — the app refuses to start without it.** Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Placeholder and short values are rejected at startup rather than silently accepted. |
-| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` | Without these, chat replies *"AI service is not configured"*. All three are needed together. |
+| Variable | What to set |
+|----------|-------------|
+| `JWT_SECRET_KEY` | Required. The backend refuses to start with the placeholder or with anything shorter than 32 characters. Generate one: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` | Your Azure OpenAI values. To use OpenAI instead, delete these three lines, then uncomment `OPENAI_API_KEY` and set it (it must start with `sk-`). The placeholders are non-empty, so leaving them in selects Azure. |
+| `GOOGLE_BOOKS_API_KEY` | A key from a Google Cloud project with the Books API enabled. Google rejects the placeholder value, and keyless requests share a public daily quota that runs out, so search is unreliable without a key. |
 
-`GOOGLE_BOOKS_API_KEY` is optional — search works unauthenticated at low volume.
-Set `OPENAI_API_KEY` instead of the Azure trio to use OpenAI directly.
-
-### 2. Run everything with Docker
+Then start everything:
 
 ```bash
 docker compose up --build
 ```
 
-That starts PostgreSQL (schema from `backend/init_db.sql` applies automatically on
-first boot), the API on **:8000**, and the frontend on **:5173**.
+This starts PostgreSQL (the schema in `backend/init_db.sql` is applied on first start), the API on port 8000 and the frontend on port 5173. Open <http://localhost:5173>, register an account and start typing.
 
-Open <http://localhost:5173>, register an account, and start chatting.
-Health check: `curl localhost:8000/health` → `{"status":"healthy","database":"connected"}`
+- Health check: `curl localhost:8000/health` returns `{"status":"healthy","database":"connected"}`
+- REST API docs: <http://localhost:8000/docs>
 
 <details>
-<summary>Prefer to run the backend on your host?</summary>
+<summary>Run the backend and frontend on the host instead</summary>
+
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and Node 18+. The default `DATABASE_URL` in `.env.example` already points at the Compose database on `localhost:5433`.
 
 ```bash
-docker compose up postgres-db -d      # database only, on :5433
+docker compose up -d postgres-db
 
 cd backend
 uv sync
 uv run uvicorn app.main:app --reload --port 8000
-
-cd ../frontend
-npm install && npm run dev
 ```
 
-The default `DATABASE_URL` in `.env.example` already points at `localhost:5433`,
-so this works with no further changes. Interactive API docs: <http://localhost:8000/docs>
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
 </details>
 
-### Running the tests
-
-```bash
-cd backend
-uv run pytest            # 198 tests, ~3s, no database, network or LLM required
-
-cd ../frontend
-npm test                 # 8 tests (Vitest + Testing Library)
-```
-
-Repositories, the Google Books client and the LLM wrapper are swapped for in-memory fakes that satisfy
-the same `typing.Protocol` interfaces as the real implementations — which is the
-practical payoff of the design below. The REST routes are exercised in-process through
-FastAPI with those same fakes.
-
 ## Architecture
 
-### The layering
+The chat agent is a routing layer over domain services that know nothing about chat. `BookService` and `ReadingService` hold the rules for books and reading, and import nothing chat-related, SQL or HTTP. The REST routers and the chat agent are two adapters over them: each parses its input, calls a service and renders the result.
 
-Each layer depends only on the layer beneath it, and always through an interface.
-Concrete classes are named in exactly one file — `app/core/dependencies.py`, the
-composition root.
+The LLM is used in two places only: routing a message to an operation, and two stages of book resolution that run after plain string matching has failed.
+
+### Layers and the composition root
 
 ```mermaid
 flowchart TD
-    R["<b>routers/</b><br/>HTTP + WebSocket endpoints<br/><i>no business logic</i>"]
-    S["<b>services/</b><br/>BookService · ReadingService · AuthService<br/><i>pure business rules</i>"]
-    I{{"<b>interfaces/</b> — typing.Protocol<br/>IBookRepository · IReadingRepository · IUserRepository<br/>IAuditRepository · IBookSearchClient · IBookIntelligence"}}
-    Rep["<b>repositories/</b><br/>SQLAlchemy Core queries"]
-    Int["<b>integrations/</b><br/>GoogleBooksClient"]
-    DB[("PostgreSQL")]
-    GB(["Google Books API"])
-    DI["<b>core/dependencies.py</b><br/>composition root —<br/>the only file that wires<br/>concrete classes to interfaces"]
-
-    R --> S
-    S --> I
-    I -.implemented by.-> Rep
-    I -.implemented by.-> Int
-    Rep --> DB
-    Int --> GB
-    DI -.injects.-> R
-
-    style I fill:#2d3748,stroke:#4fd1c5,stroke-width:2px,color:#fff
-    style DI fill:#2d3748,stroke:#f6ad55,stroke-width:2px,color:#fff
-```
-
-Because `services/` only ever names a Protocol, a test can hand `BookService` an
-in-memory dict instead of a database and the service cannot tell the difference.
-
-### Two adapters, one service layer
-
-The chat agent is not where the app's logic lives. It is one of two **adapters** over
-the same domain services — the other is a conventional REST API — and neither contains
-business rules. An adapter parses its input, calls a service, and renders the result;
-the LLM's only job is to pick which service call a sentence means.
-
-```mermaid
-flowchart LR
-    U1(["Chat user"]) --> Agent
-    U2(["HTTP client"]) --> REST
-
-    subgraph Adapters["Adapters — parse, call, render"]
-        direction TB
-        Agent["<b>Chat agent</b><br/>LLM picks a tool<br/>renders BDUI"]
-        REST["<b>REST API</b><br/>client picks a route<br/>returns JSON"]
+    subgraph Adapters
+        REST["REST routers<br/>routers/books.py, routers/reading.py"]
+        Chat["Chat adapter<br/>ws_chat → chat_service → RouterAgent → tools"]
     end
-
-    subgraph Services["Domain services — every rule lives here"]
-        direction TB
-        BS["<b>BookService</b><br/>search · resolve"]
-        RS["<b>ReadingService</b><br/>start_tracking · log_reading<br/>undo_last_log · get_all_progress"]
+    subgraph Services["Domain services"]
+        BS["BookService<br/>search · resolve"]
+        RS["ReadingService<br/>start_tracking · log_reading<br/>undo_last_log · get_all_progress"]
     end
+    P{{"interfaces/ (typing.Protocol)<br/>IBookRepository · IReadingRepository<br/>IBookSearchClient · IBookIntelligence"}}
+    Impl["Implementations<br/>BookRepository, ReadingRepository (SQLAlchemy Core)<br/>GoogleBooksClient (httpx)<br/>BookIntelligenceService (LLM)"]
+    DI["core/dependencies.py<br/>composition root"]
 
-    Agent --> BS
-    Agent --> RS
     REST --> BS
     REST --> RS
-    BS --> Repos[("Repositories<br/>behind Protocols")]
-    RS --> Repos
-
-    style Services fill:#2d3748,stroke:#4fd1c5,stroke-width:2px,color:#fff
+    Chat --> BS
+    Chat --> RS
+    BS --> P
+    RS --> P
+    Impl -. satisfies .-> P
+    DI -. builds services from .-> Impl
 ```
 
-| Operation | REST | Agent tool | Service call |
-|-----------|------|------------|--------------|
+- Services type every dependency as a Protocol. `BookService` takes an `IBookRepository`, an `IBookSearchClient` and an `IBookIntelligence`; it never sees a database connection or an LLM client.
+- `app/core/dependencies.py` is the one composition root. It is the only module that constructs repositories, the Google Books client, the LLM client, the password hasher and the token service, and `tests/test_architecture.py` fails if any other module in `app/` does. REST routes receive services through FastAPI `Depends`; the chat adapter calls the same provider functions with the turn's connection.
+- Tests replace each Protocol with an in-memory fake, most of them in `tests/conftest.py`. None of the fakes import the interface they satisfy.
+
+The two adapters map onto the same service calls:
+
+| Operation | REST | Chat tool | Service call |
+|-----------|------|-----------|--------------|
 | Search | `GET /books/search?q=` | `search_books` | `BookService.search` |
 | Track a book | `POST /books/track` | `start_tracking` | `BookService.resolve` → `ReadingService.start_tracking` |
 | Log pages | `POST /reading/log` | `log_reading` | `BookService.resolve` → `ReadingService.log_reading` |
 | Undo last entry | `DELETE /reading/last` | `undo_last_log` | `ReadingService.undo_last_log` |
 | Progress | `GET /progress` | `show_progress` | `ReadingService.get_all_progress` |
 
-Because the rules have one home, a rule violation reads the same through both doors:
-logging 500 pages of a 412-page book is a `400` with *"'Dune' only has 412 pages left…"*
-over HTTP, and that exact sentence in chat. `tests/test_adapter_equivalence.py` runs every
-operation through both adapters against identical in-memory fakes and asserts they call
-the same service method, leave the same state, and return the same result.
+A rule violation reads the same through both. Logging 500 pages of a 412-page book returns `400` with *"'Dune' only has 412 pages left (0/412 read). Try logging 412 pages instead."* over REST, and that sentence as the chat reply. `tests/test_adapter_equivalence.py` runs every operation through both adapters against identical fakes and asserts the same service calls, the same resulting state and the same result or error message.
 
-### One chat turn, end to end
+The API also has `/auth/register`, `/auth/login`, `/chat/sessions`, `/chat/history`, and `POST /chat/message`, which runs one chat turn without streaming. Every API route except `/auth/*` and `/health` requires `Authorization: Bearer <JWT>`; the WebSocket takes the token in its first frame.
+
+### One chat turn
 
 ```mermaid
 sequenceDiagram
-    participant U as Browser
+    participant B as Browser
     participant WS as ws_chat
-    participant CS as ChatService
+    participant CS as chat_service
     participant RA as RouterAgent
-    participant T as Tools
-    participant LLM as Azure OpenAI
+    participant LLM
+    participant T as log_reading tool
+    participant S as Services
     participant DB as PostgreSQL
 
-    U->>WS: {type:"auth", token}
-    WS->>WS: verify JWT → load User
-    WS-->>U: {type:"auth_ok"}
-
-    U->>WS: "I read 40 pages of Dune"
-    WS->>CS: process_message(body, user, conn, send_fn)
-    CS->>DB: load/create session, persist user message
-    CS->>DB: fetch last 30 turns
+    B->>WS: {type:"auth", token}
+    WS-->>B: {type:"auth_ok"}
+    B->>WS: {type:"message", message:"I read 40 pages of Dune"}
+    Note over WS,DB: one transaction for the whole turn
+    WS->>CS: process_message
+    CS->>DB: load or create chat session, save user message, load history
     CS->>RA: run(user_input, history)
-
     RA->>LLM: stream, with 5 tool schemas bound
-    loop each token
-        LLM-->>RA: chunk
-        RA-->>U: {type:"text_chunk"}
-    end
-
-    alt LLM returns a tool call
-        LLM-->>RA: tool_call log_reading{book_title:"Dune", pages:40}
-        RA-->>U: {type:"element", progress}
-        RA->>T: execute_tool("log_reading", args, ctx)
-        T->>T: resolve book (six-stage pipeline)
-        T->>DB: INSERT reading_session
-        T-->>RA: BDUI elements
-        RA-->>U: {type:"element"} per element
-    else LLM returns plain text
-        RA->>RA: wrap text as a BDUI text element
-    end
-
-    CS->>DB: persist assistant message + ui_payload
-    CS-->>U: {type:"done", response, suggestions}
+    RA-->>B: text_chunk frames, if the model writes text
+    LLM-->>RA: tool call log_reading{book_title:"Dune", pages:40}
+    RA-->>B: element: progress ("Running log reading…")
+    RA->>T: execute_tool
+    T->>S: BookService.resolve("Dune")
+    T->>S: ReadingService.log_reading(add, 40)
+    S->>DB: INSERT reading_sessions
+    T-->>RA: BDUI elements
+    RA-->>B: one element frame per element
+    CS->>DB: save assistant message and its ui_payload
+    CS-->>B: {type:"done", response, suggestions}
 ```
 
-The agent loop is deliberately **single-pass**: the LLM gets one chance to call tools,
-and tool results are returned to the user rather than fed back for a second LLM turn.
-That bounds latency and cost per message at the price of multi-step reasoning —
-a trade-off discussed in [DESIGN.md](./DESIGN.md#4-langchain-router-agent).
+Before calling the LLM, `RouterAgent` answers a few fixed requests itself: "help", recommendation requests, and the search-prompt buttons. If the model replies with text instead of a tool call, the text becomes a single text element.
 
-### The six-stage book resolution pipeline
+### Book resolution: a six-stage pipeline
 
-Turning *"harry potter 1"* into a specific Google Books volume is the hardest problem
-in the app. The pipeline is ordered so that **the cheapest, most deterministic step runs
-first** and the LLM is consulted only when plain matching has already failed.
+`BookService.resolve_book` turns a loose title into one stored book. Stages run cheapest first, and the LLM is consulted only after a plain database lookup has failed. It never produces a book directly: stage 5 returns an index into real search results, or -1.
 
 ```mermaid
 flowchart TD
     Start(["resolve_book('harry potter 1')"]) --> S0
-
-    S0{"<b>0.</b> Names a book shown<br/>earlier this session?"}
-    S0 -->|yes| Pin["Use that exact volume<br/><i>matched on google_volume_id</i>"]
-    Pin --> Done
+    S0{"<b>0.</b> Matches a book shown<br/>in this session's last search?"}
+    S0 -->|yes| Done(["return Book"])
     S0 -->|no| S1
-
-    S1{"<b>1.</b> Exact/substring<br/>title match in DB?"}
-    S1 -->|hit| Done(["return Book"])
+    S1{"<b>1.</b> Title match in DB<br/>exact, then prefix, then substring"}
+    S1 -->|hit| Done
     S1 -->|miss| S2
-
-    S2["<b>2.</b> LLM normalizes the query<br/><i>'harry potter 1' →<br/>'Harry Potter and the Sorcerer's Stone'</i><br/>also flags non-book queries"]
-    S2 -->|not a book query| Nothing(["return None"])
+    S2["<b>2.</b> LLM normalizes the query<br/>and flags non-book queries"]
+    S2 -->|not a book| Nothing(["return None"])
     S2 --> S3
-
-    S3{"<b>3.</b> Retry DB lookup<br/>with normalized title"}
+    S3{"<b>3.</b> DB lookup again<br/>with the normalized title"}
     S3 -->|hit| Done
     S3 -->|miss| S4
-
-    S4["<b>4.</b> Google Books search<br/>top 5 English results"]
+    S4["<b>4.</b> Google Books search<br/>5 results, English only"]
     S4 -->|no results| Nothing
     S4 --> S5
-
-    S5["<b>5.</b> LLM picks the best match<br/>from the 5 candidates<br/><i>or returns -1 for none</i>"]
-    S5 -->|no good match| Nothing
+    S5["<b>5.</b> LLM picks the best candidate<br/>or -1 for none"]
+    S5 -->|none| Nothing
     S5 --> S6
-
-    S6{"<b>6.</b> Already stored under<br/>this volume ID?"}
+    S6{"<b>6.</b> Already stored under<br/>this google_volume_id?"}
     S6 -->|yes| Done
     S6 -->|no| Save["INSERT into books"] --> Done
 
-    style S0 fill:#2d3748,stroke:#63b3ed,stroke-width:2px,color:#fff
-    style Pin fill:#2d3748,stroke:#63b3ed,stroke-width:2px,color:#fff
     style S2 fill:#2d3748,stroke:#f6ad55,stroke-width:2px,color:#fff
     style S5 fill:#2d3748,stroke:#f6ad55,stroke-width:2px,color:#fff
-    style Done fill:#22543d,stroke:#48bb78,color:#fff
-    style Nothing fill:#742a2a,stroke:#fc8181,color:#fff
 ```
 
-Three things this buys:
+- Stage 0 runs before the six stages. If the user searched for *"ayn rand"* and then types *"The Fountainhead"*, they get the exact volume they were shown, not an edition the pipeline picks independently with a different page count.
+- Stages 1 and 3 check the shared catalogue before going to Google. A title that matches a stored book at stage 1 costs one database query, with no LLM or HTTP call. Stage 3 catches titles that match only after normalization.
+- Stage 6 deduplicates on `google_volume_id` (a `UNIQUE` column), not on title, so different phrasings of the same book converge on one row.
+- The two LLM stages (highlighted) degrade instead of failing. With no credentials, or if the call errors, stage 2 uses the raw query and stage 5 takes the first result.
+- A request that carries a volume id skips the pipeline: `BookService.resolve` looks the id up directly. The id comes from the REST `google_volume_id` field or from a chat button for a specific book.
 
-- **Stage 0 keeps the conversation honest.** Search for *"ayn rand"*, see The
-  Fountainhead at 740 pages, then type *"The Fountainhead"* — you get the volume you
-  were just shown. Without it, the title re-enters at stage 1 and the pipeline picks
-  an edition independently, so the page count can change under you.
-- **Stages 1 and 3 are a cache.** A title anyone has already looked up costs one
-  indexed query — no LLM call, no HTTP call.
-- **Stage 6 deduplicates on `google_volume_id`, not on title.** The books table is a
-  shared canonical catalogue, so two users who phrase the same book differently
-  converge on one row.
+### BDUI protocol
 
-The LLM steps (2 and 5, highlighted) both degrade gracefully: if no credentials are
-configured, stage 2 passes the raw query through and stage 5 falls back to the first
-search result. Book resolution keeps working without an LLM — it just gets dumber.
-
-### The BDUI protocol
-
-The backend does not return markdown for the client to interpret. It returns a typed
-element tree, and the React `BduiRenderer` switches on `element.type`:
+The backend returns a typed element tree, not markdown. `frontend/src/components/BduiRenderer.jsx` switches on `element.type`: `text`, `composite`, `book_list`, `book_progress`, `action_buttons`, `progress`, `help_card`. The reply to *"log 40 pages of dune"* (progress data trimmed):
 
 ```json
 {
   "type": "composite",
   "elements": [
-    { "type": "text", "content": "Logged **40 pages** of *Dune*.", "style": "success" },
-    { "type": "book_progress", "data": { "title": "Dune", "pages_read": 40,
-                                         "total_pages": 412, "progress_percentage": 9.71 } },
-    { "type": "action_buttons", "buttons": [
-        { "label": "Log More Pages", "action": "log_reading",
-          "variant": "primary", "payload": { "book_title": "Dune" } }
+    { "type": "text", "style": "success", "content": "Logged **40 pages** of **'Dune'**." },
+    { "type": "book_progress",
+      "data": { "title": "Dune", "pages_read": 40, "total_pages": 412, "progress_percentage": 9.71 } },
+    { "type": "action_buttons", "layout": "horizontal", "buttons": [
+        { "label": "Log More Pages", "action": "log_reading", "variant": "primary",
+          "payload": { "book_title": "Dune", "google_books_id": "<volume id>" } },
+        { "label": "Show All Progress", "action": "show_progress", "variant": "secondary", "payload": {} }
     ]}
   ]
 }
 ```
 
-Element types the backend emits: `text`, `composite`, `book_list`, `book_progress`,
-`action_buttons`, `progress`, `help_card`.
+A button click goes back over the same WebSocket as an `action_click` message and takes the same path through `RouterAgent` as typed text. The payload's `google_books_id` makes the click resolve that exact volume. Each assistant reply is stored with its element tree in `chat_messages.ui_payload`.
 
-The loop closes on itself: a button carries an `action` and a `payload`, and clicking it
-sends a `message_type: "action_click"` frame back. The agent treats that as just
-another user turn, so **buttons and typing go down exactly one code path** — there is no
-separate command API behind the UI.
-
-Over the WebSocket, one turn looks like this:
+WebSocket frames for one turn:
 
 ```
-Client → {"type":"auth","token":"<JWT>"}
-Server → {"type":"auth_ok","user_id":"...","email":"..."}
-
-Client → {"type":"message","session_id":"...","message":"log 30 pages of dune"}
-Server → {"type":"text_chunk","content":"Sure"}        # repeated as tokens stream
-Server → {"type":"element","element":{...}}            # repeated per BDUI element
-Server → {"type":"done","response":{...},"suggestions":[...]}
+→ {"type":"auth","token":"<JWT>"}
+← {"type":"auth_ok","user_id":"…","email":"…"}
+→ {"type":"message","session_id":null,"message":"log 30 pages of dune","message_type":"text"}
+← {"type":"text_chunk","content":"…"}        zero or more, as the model streams text
+← {"type":"element","element":{…}}           one per UI element
+← {"type":"done","session_id":"…","response":{…},"suggestions":[…]}
 ```
 
-### Progress is derived, never stored
+`ping` gets `pong`. A failed turn gets `{"type":"error", …}` carrying an error element.
 
-There is no `progress` column anywhere. Progress is derived from session rows, never
-stored: `reading_sessions` holds one row per *"I read N pages on date D"*, and every
-number the UI shows is a `SUM` over those rows joined against the book's page count.
-Storing a running total would mean two sources of truth that can drift; deriving it
-means they cannot. [DESIGN.md](./DESIGN.md#6-derived-reading-progress) covers what this
-costs as well as what it buys.
+## Engineering decisions
+
+- **Services depend only on Protocols, and one composition root builds everything.** `BookService` and `ReadingService` are constructed from Protocol-typed dependencies and never name a concrete class. `tests/test_architecture.py` enforces both halves. It fails if a module in `services/` imports from `repositories/`, `integrations/` or the LLM-backed `BookIntelligenceService`, and it fails if any module other than `app/core/dependencies.py` constructs one of those implementations. ([DESIGN.md §1](./DESIGN.md#1-protocol-based-dependency-injection), [Composition root](./DESIGN.md#composition-root))
+- **Progress is derived from session rows and never stored.** `reading_sessions` has one row per logged entry. Pages read is a `SUM` at query time, and the percentage is computed from that and the book's page count. With no progress column, there is nothing to drift. Undo deletes the newest row, and lowering progress trims or deletes the newest rows. ([§6](./DESIGN.md#6-derived-reading-progress))
+- **The audit write shares the registration's transaction.** `/auth/register` writes the user and its `audit_log` row through two repositories on the same request-scoped connection, opened with `engine.begin()`, so both commit or neither does. Login writes `last_login_at` and its audit row the same way. ([Other decisions](./DESIGN.md#other-decisions-worth-naming))
+- **One error boundary per chat turn.** `ws_chat` runs each turn in one transaction. Tools turn expected domain errors, such as an unknown book or too many pages, into ordinary replies. Anything unexpected propagates to one `try/except` in `ws_chat`, which rolls back the whole turn (user message, tool writes, assistant reply) and sends an error frame. LLM calls are the exception: the agent retries once if nothing has streamed yet, and the resolution pipeline falls back as described above. Over REST, `main.py` maps the same domain exceptions to 400, 401, 404 and 502. ([Other decisions](./DESIGN.md#other-decisions-worth-naming))
+- **Single-pass agent.** The model routes each message once, with no agent loop. Tool results go straight to the user as UI elements and are never fed back to the model. Cost and latency per message don't grow with tool output, and the numbers in cards come from services, never from the model. ([§4](./DESIGN.md#4-langchain-router-agent))
+
+## Known limitations
+
+- **No recommendations.** *"What should I read?"* gets a fixed decline with search suggestions. It is matched before the LLM is called, and `search_books` refuses queries made only of filler words like *"good books"*.
+- **No multi-step reasoning.** The model never sees tool results, so it can't act on one. *"Log 40 pages of whatever I read yesterday"* can't be done in one message.
+- **Book data follows Google Books.** Search keeps English-language results only, and a volume with no page count is stored as 500 pages, so progress on it is approximate.
+- **Past conversations aren't shown in the UI.** A page reload starts a new chat session. `/chat/sessions` and `/chat/history` exist, but the frontend doesn't call them.
+- **No token revocation.** JWTs expire after 7 days; logout only removes the token from the browser.
+- **Set up for local development only.** The frontend's API URL and the CORS allow-list are hard-coded to localhost, and both containers run dev servers. There are no migrations: `init_db.sql` runs only when the database volume is created.
+
+## Tests
+
+```bash
+cd backend
+uv run pytest        # 203 tests, about 3 s
+
+cd ../frontend
+npm install
+npm test             # 8 tests (Vitest + Testing Library)
+```
+
+The backend suite needs no database, network, LLM or `.env`. Repositories, the Google Books client and the LLM are in-memory fakes, and the REST routes and the WebSocket handler run in-process.
+
+| Area | Tests |
+|------|------:|
+| Chat agent, tools and turn handling | 92 |
+| Domain services (`BookService`, `ReadingService`) | 55 |
+| REST and chat adapter equivalence | 24 |
+| Auth (service and routes) | 20 |
+| Mappers | 9 |
+| Architecture (import and construction rules) | 3 |
 
 ## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
-| API | FastAPI (async), WebSocket streaming |
-| Database | PostgreSQL 15, SQLAlchemy Core + asyncpg |
-| LLM | LangChain + Azure OpenAI / OpenAI (tool calling, structured output) |
+|-------|------------|
+| API | Python 3.12, FastAPI (async), WebSocket streaming |
+| Database | PostgreSQL 15, SQLAlchemy Core, asyncpg |
+| LLM | LangChain with Azure OpenAI or OpenAI (tool calling, structured output) |
 | Auth | JWT (python-jose), bcrypt |
-| External data | Google Books API |
-| Frontend | React 18 + Vite |
-| Tooling | uv, pytest + pytest-asyncio, Vitest, Docker Compose |
+| External data | Google Books API via httpx |
+| Frontend | React 18, Vite |
+| Tooling | uv, pytest, pytest-asyncio, Vitest, Docker Compose |
 
-## API
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/auth/register` | POST | Register with email + password |
-| `/auth/login` | POST | Login, returns JWT |
-| `/chat/ws` | WS | Streaming chat (primary interface) |
-| `/chat/message` | POST | Single-turn chat, non-streaming |
-| `/chat/sessions` | GET | List chat sessions |
-| `/chat/history` | GET | Message history for a session |
-| `/books/search?q=` | GET | Search the catalogue (`search_by=title\|author` optional) |
-| `/books/track` | POST | Start tracking — `title` or `google_volume_id`, optional `pages` |
-| `/reading/log` | POST | Log progress — `action` add\|set\|reduce\|remove, `pages` or `percentage` |
-| `/reading/last` | DELETE | Undo the most recent reading entry |
-| `/progress` | GET | Progress — optional `filter`, `sort_by`, `limit` |
-| `/health` | GET | Liveness + DB reachability |
-
-Every endpoint except `/auth/*` and `/health` requires `Authorization: Bearer <JWT>`.
-Interactive docs for all of them are at `/docs`.
-
-## Design decisions
-
-[**DESIGN.md**](./DESIGN.md) explains the reasoning behind each choice, including the
-trade-offs and what would change at production scale.
-
-| Decision | Why |
-|----------|-----|
-| [Protocol over ABC](./DESIGN.md#1-protocol-based-dependency-injection) | Test fakes satisfy the interface without importing production code |
-| [Composition root](./DESIGN.md#composition-root) | One file knows concrete classes; everything else sees interfaces |
-| [Derived progress](./DESIGN.md#6-derived-reading-progress) | Progress is derived from session rows, never stored, so it cannot drift |
-| [Backend-driven UI](./DESIGN.md#5-backend-driven-ui-bdui) | New chat widgets ship as a backend change plus one renderer case |
-| [Agent as an adapter](./DESIGN.md#8-the-agent-is-a-routing-layer) | Rules live in services, so the chat agent and REST API can't disagree |
-| [Six-stage resolution](./DESIGN.md#7-the-book-resolution-pipeline) | LLM calls only where deterministic matching has already failed |
-| [Domain mappers](./DESIGN.md#2-domain-mappers) | DB column renames stay contained to one file |
-
-<details>
-<summary>Project structure</summary>
+## Project structure
 
 ```
 backend/app/
-├── chat/           # RouterAgent, tool implementations, BDUI helpers, session manager
-├── config/         # Settings, LLM provider selection
-├── core/           # Composition root (dependencies.py), domain exceptions
-├── domain/         # Mappers
-├── integrations/   # Google Books client
-├── interfaces/     # Protocol definitions
-├── repositories/   # SQLAlchemy Core queries
-├── routers/        # FastAPI route handlers
-├── schemas/        # Pydantic request/response models
-└── services/       # Business logic
-
+  routers/        REST and WebSocket endpoints
+  chat/           RouterAgent, tool schemas and handlers, BDUI builders, chat persistence
+  services/       BookService, ReadingService, AuthService, BookIntelligenceService (LLM)
+  interfaces/     Protocol definitions
+  repositories/   SQLAlchemy Core queries
+  integrations/   Google Books client
+  domain/         mappers from DB rows and API responses to models
+  schemas/        Pydantic models
+  core/           composition root (dependencies.py), domain exceptions
+  config/         settings, LLM provider selection
+backend/tests/    pytest suite; in-memory fakes in conftest.py
 frontend/src/
-├── components/     # ChatPage, BduiRenderer, cards
-├── hooks/          # useChatWebSocket (reconnect, ping, stream accumulation)
-└── services/       # auth
+  components/     ChatPage, BduiRenderer, cards
+  hooks/          useChatWebSocket (auth, reconnect, ping, stream assembly)
+  services/       auth API calls
+  config/         API and WebSocket URLs
+  styles/         CSS
+docs/             demo GIF
 ```
 
-</details>
+## Further reading
+
+[DESIGN.md](./DESIGN.md) covers each decision in more depth, including what it costs and when I would change it.

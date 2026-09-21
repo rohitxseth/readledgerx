@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -14,7 +15,6 @@ from langchain_core.messages import (
 from app.chat import ui
 from app.chat.prompt import SYSTEM_PROMPT
 from app.chat.tools import TOOL_DEFINITIONS, execute_tool
-from app.config.llm_config import get_langchain_llm
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +82,15 @@ def _result(
 class RouterAgent:
     def __init__(
         self,
+        llm: BaseChatModel | None,
         metadata: dict,
         context: dict,
         stream_callback: Callable[[dict], Awaitable[None]] | None = None,
     ):
+        self.llm = llm
         self.metadata = metadata
         self.context = context
         self.stream_callback = stream_callback
-        self.llm = get_langchain_llm()
 
     async def run(self, user_input: dict, history: list[dict]) -> dict:
         intercepted = self._intercept(user_input)

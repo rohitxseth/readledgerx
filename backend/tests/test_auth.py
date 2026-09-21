@@ -94,7 +94,7 @@ def test_auth_service_uses_injected_hasher():
         def verify(self, plain: str, hashed: str) -> bool:
             return plain.upper() == hashed
 
-    svc = AuthService(hasher=UpperCaseHasher())
+    svc = AuthService(hasher=UpperCaseHasher(), token_service=TokenService())
     assert svc.hash_password("hello") == "HELLO"
     assert svc.verify_password("hello", "HELLO") is True
     assert svc.verify_password("wrong", "HELLO") is False
@@ -102,7 +102,7 @@ def test_auth_service_uses_injected_hasher():
 
 def test_auth_service_create_and_decode_token():
     token_svc = TokenService(secret_key="unit-test-key", algorithm="HS256")
-    auth = AuthService(token_service=token_svc)
+    auth = AuthService(hasher=BcryptPasswordHasher(), token_service=token_svc)
 
     token = auth.create_access_token({"sub": "abc"})
     payload = auth.decode_token(token)
@@ -114,8 +114,8 @@ def test_auth_service_decode_token_uses_own_token_service():
     svc_a = TokenService(secret_key="key-a", algorithm="HS256")
     svc_b = TokenService(secret_key="key-b", algorithm="HS256")
 
-    auth_a = AuthService(token_service=svc_a)
-    auth_b = AuthService(token_service=svc_b)
+    auth_a = AuthService(hasher=BcryptPasswordHasher(), token_service=svc_a)
+    auth_b = AuthService(hasher=BcryptPasswordHasher(), token_service=svc_b)
 
     token_from_a = auth_a.create_access_token({"sub": "user"})
 

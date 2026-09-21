@@ -160,7 +160,8 @@ hasher. The same schema lowercases the email, for registration and login alike, 
 The chat interface is backed by an LLM agent that uses tool-calling to map user intent
 onto backend operations. Per message:
 
-1. Build message history (system prompt + last 20 turns)
+1. Build the model input: the system prompt, the 20 most recent earlier messages, then
+   the current message
 2. Stream from the LLM with five tool schemas bound
 3. If the LLM returns a tool call → execute it, return structured BDUI elements
 4. If the LLM returns text → wrap it as a text element
@@ -173,8 +174,10 @@ rendered and returned to the user directly, and the LLM never sees them.
 
 That is a deliberate trade:
 
-- **What it buys:** exactly one LLM round-trip per message, so latency and cost are
-  bounded and predictable. No runaway loops, no token budget that grows with tool output.
+- **What it buys:** one routing call per message, plus one retry if that call fails
+  before any text has streamed. A tool that has to resolve a book can add up to two more
+  calls (normalization and selection, §7), but nothing loops, so latency and cost are
+  bounded and predictable, and the token budget never grows with tool output.
   Tool results reach the user as structured cards rather than as an LLM paraphrase of
   structured cards — which also removes any opportunity for the model to garble a number.
 - **What it costs:** no multi-step reasoning. *"Log 40 pages of whatever I was reading
@@ -191,7 +194,7 @@ book?"* needs ranking, and a looping agent would fetch the list and then reason 
 in a second turn. Instead `show_progress` takes `sort_by` and `limit`, and
 `ReadingService` does the ranking. The model picks the ordering; the backend computes
 the answer. Pushing the aggregation into the service is what lets a superlative question
-stay within one round-trip — and it keeps the model from arithmetic it is bad at.
+stay within one routing call — and it keeps the model from arithmetic it is bad at.
 
 ### Determinism where determinism is cheap
 
@@ -240,7 +243,7 @@ Chat responses are structured JSON element trees, not raw HTML or markdown strin
 {
   "type": "composite",
   "elements": [
-    {"type": "text", "content": "Logged **50 pages** of *Dune*.", "style": "success"},
+    {"type": "text", "content": "Logged **50 pages** of **'Dune'**.", "style": "success"},
     {"type": "book_progress", "data": {...}},
     {"type": "action_buttons", "buttons": [...]}
   ]
@@ -272,10 +275,13 @@ missing progress card.
   plus one `case` in the renderer — no feature flags, no version negotiation.
 - **Interaction is uniform.** A button carries `action` and `payload`; clicking it sends
   `message_type: "action_click"` back through the same WebSocket, and the agent handles it
-  as another turn. Typing and clicking share one code path rather than one path plus a
-  command API.
-- **Responses are replayable.** Elements are persisted in `chat_messages.ui_payload`, so
-  reloading a session re-renders the original cards instead of a flattened transcript.
+  as another turn. The chat UI needs no endpoint per button: typing and clicking share
+  one code path. The REST API (§8) is a separate adapter for programmatic clients, not
+  something the chat UI calls.
+- **Responses can be replayed.** Elements are persisted in `chat_messages.ui_payload`, and
+  `/chat/history` returns them, so a client can re-render a past conversation with its
+  original cards rather than a flattened transcript. The web UI doesn't do this yet: a
+  page reload starts a new session.
 
 ### What it costs
 
@@ -365,16 +371,23 @@ most deterministic step always runs first**:
 | # | Stage | Cost |
 |---|-------|------|
 | 0 | Match against results already shown this session | in-memory |
-| 1 | Ranked substring title lookup in the local DB | one indexed query |
+| 1 | Ranked substring title lookup in the local DB | one query (a scan of `books`) |
 | 2 | LLM normalizes the query, and flags non-book queries | one LLM call |
-| 3 | Retry the DB lookup with the normalized title | one indexed query |
-| 4 | Google Books search, top 5 English results | one HTTP call |
+| 3 | Retry the DB lookup with the normalized title | one query (a scan of `books`) |
+| 4 | Google Books search, 5 results, non-English dropped | one HTTP call |
 | 5 | LLM selects the best of the 5 candidates | one LLM call |
-| 6 | Dedupe on `google_volume_id`, then persist | one indexed query |
+| 6 | Dedupe on `google_volume_id`, then persist | one indexed lookup, maybe an INSERT |
 
 The ordering is the design. An LLM call is the most expensive and least predictable step
 available, so it is never the first thing tried — stages 1 and 3 are a cache, and a title
-that anyone has already resolved costs a single indexed query with no LLM and no HTTP.
+that matches a stored book at stage 1 costs one database query with no LLM and no HTTP.
+
+That query is not index-backed. `get_by_title` matches with `LOWER(title) LIKE '%…%'`,
+and a pattern with a leading wildcard can't use the B-tree `idx_books_title`, so Postgres
+scans `books`. The table is a shared catalogue that grows only when someone resolves a
+book nobody has resolved before, so the scan is cheap at this size. At scale the fix is a
+`pg_trgm` GIN index on `LOWER(title)`, which serves substring `LIKE` without changing the
+query.
 
 Stage 3 exists because of a specific failure: stage 2 may rewrite *"harry potter 1"* into
 a title the database already holds under its formal name. Skipping the re-check would
@@ -491,8 +504,8 @@ a second client is what makes it a contract.
 ### One rule, one message, two renderings
 
 Services raise domain exceptions — `BusinessLogicError`, `EntityNotFoundError`,
-`BookResolutionError` — never `ValueError`. The REST layer maps them to `400` / `404` /
-`502` in one place (`main.py`); the agent renders the same message as chat text. So a
+`BookResolutionError` — never `ValueError`. The REST layer maps them to `400` / `401` /
+`404` / `502` in one place (`main.py`); the agent renders the same message as chat text. So a
 violated rule produces the same sentence through both doors, and the equivalence tests
 assert exactly that, string for string.
 
@@ -538,19 +551,29 @@ def get_book_service(conn) -> BookService:
     return BookService(
         repo=BookRepository(conn),
         search_client=GoogleBooksClient(),
-        intelligence=BookIntelligenceService(get_langchain_llm()),
+        intelligence=BookIntelligenceService(get_llm()),
     )
 ```
 
-This is the only module that names concrete classes alongside the interfaces they
-satisfy. Everything else talks in abstractions.
+This is the only module that constructs the repositories, the Google Books client, the
+LLM client (through `get_langchain_llm`), `BookIntelligenceService`, the password hasher
+and the token service. Everything else receives them already built and talks in
+abstractions.
 
-**Where this leaks today:** `app/chat/tools.py` imports `get_book_service` and
-`get_reading_service` and calls them directly as factories, outside of FastAPI's
-dependency system. It works — they are ordinary functions — but it means those providers
-serve two roles at once, and the chat layer reaches into the DI wiring instead of being
-handed its dependencies. The clean fix is to separate the factory from the FastAPI
-provider and have the tool context carry pre-built services.
+`tests/test_architecture.py` enforces that. It walks the syntax tree of every module in
+`app/` and fails if any module other than `dependencies.py` calls one of those
+constructors. When the check was added it found three leaks: the WebSocket handshake
+built its own `UserRepository`, `AuthService` defaulted its hasher and token service,
+and `RouterAgent` fetched its own LLM client. Each now receives the dependency from the
+composition root, and `AuthService` and `RouterAgent` no longer have defaults to fall
+back on.
+
+**What remains is softer:** the chat adapter (`tools.py`, `chat_service.py` and the
+WebSocket handshake) calls provider functions such as `get_book_service` and `get_llm`
+directly as factories, outside FastAPI's dependency system. It works — they are ordinary
+functions — but those providers serve two roles at once, and the chat layer reaches into
+the wiring instead of being handed its dependencies. The clean fix is to separate the
+factory from the FastAPI provider and have the tool context carry pre-built services.
 
 ---
 
@@ -578,13 +601,15 @@ bus swallowed the error, so no registration was ever audited. A queue earns its 
 when a side effect has to survive the request failing; an audit row is the opposite case.
 
 **A chat turn is one transaction with one failure boundary.** The user message, any tool
-writes, the session metadata and the assistant reply share one connection. Nothing below
-the WebSocket handler catches unexpected errors: if any step fails, the turn rolls back
-and the handler sends a BDUI error element, so the user never sees a reply that wasn't
-saved. Expected failures — a book that can't be found, more pages than the book has — are
-domain errors that the tools turn into ordinary replies. The one retry is the LLM call,
-and only before anything has streamed: once text has reached the client, a retry would
-stream a second, different answer after the first.
+writes, the session metadata and the assistant reply share one connection. Apart from
+LLM calls, nothing below the WebSocket handler catches unexpected errors: if any step
+fails, the turn rolls back and the handler sends a BDUI error element, so the user never
+sees a reply that wasn't saved. Expected failures — a book that can't be found, more pages
+than the book has — are domain errors that the tools turn into ordinary replies. LLM
+failures are handled where the call is made. The routing call is retried once, and only
+before anything has streamed: once text has reached the client, a retry would stream a
+second, different answer after the first. The two resolution calls fall back instead
+(§7).
 
 **JWT rather than server-side sessions.** Tokens carry `sub` and `exp` and nothing else,
 so authenticating a request is a signature check plus one user lookup, with no session

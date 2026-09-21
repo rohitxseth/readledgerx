@@ -21,10 +21,13 @@ from app.chat.session_manager import (
     get_user_sessions,
     load_session,
 )
-from app.core.dependencies import authenticate, get_current_user
+from app.core.dependencies import (
+    authenticate,
+    get_current_user,
+    get_user_repository,
+)
 from app.core.exceptions import DomainException
 from app.database import async_engine, get_db
-from app.repositories.user_repository import UserRepository
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.models import User
 
@@ -89,9 +92,6 @@ async def ws_chat(websocket: WebSocket):
                 )
                 continue
 
-            # The one place a failed turn is handled: its transaction has rolled
-            # back, so nothing from the turn is persisted, and the client gets an
-            # error element instead of a reply.
             try:
                 async with async_engine.begin() as conn:
                     await process_message(body, user, conn, websocket.send_json)
@@ -143,6 +143,6 @@ async def get_history(
 async def _authenticate_ws(token: str) -> User | None:
     async with async_engine.begin() as conn:
         try:
-            return await authenticate(token, UserRepository(conn))
+            return await authenticate(token, get_user_repository(conn))
         except DomainException:
             return None

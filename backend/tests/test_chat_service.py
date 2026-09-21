@@ -10,11 +10,14 @@ import uuid
 from contextlib import asynccontextmanager
 
 import pytest
+from langchain_core.messages import AIMessageChunk
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 from starlette.testclient import TestClient
 
 from app.chat import chat_service, session_manager
+from app.core.dependencies import get_current_user
+from app.database import get_db
 from app.main import app
 from app.routers import chat as chat_router
 from app.schemas.chat import ChatRequest
@@ -109,7 +112,7 @@ def stored_turn(monkeypatch):
         return f"msg-{len(saved)}"
 
     async def get_conversation_history(conn, session_id, limit=50):
-        return []
+        return [dict(m) for m in saved[-limit:]]
 
     monkeypatch.setattr(chat_service, "create_session", create_session)
     monkeypatch.setattr(chat_service, "add_message", add_message)
@@ -135,6 +138,103 @@ async def test_a_storage_failure_fails_the_turn(stored_turn, monkeypatch):
     monkeypatch.setattr(chat_service, "add_message", add_message)
     with pytest.raises(RuntimeError, match="database unavailable"):
         await chat_service.process_message(ChatRequest(message="help"), USER, conn=None)
+
+
+# ---------------------------------------------------------------------------
+# The LLM sees the newest history, and the current message once
+# ---------------------------------------------------------------------------
+
+
+class _QueryConn:
+    """Keeps the statement it is given and returns rows in the order supplied."""
+
+    def __init__(self, rows):
+        self.statement = None
+        self._rows = rows
+
+    async def execute(self, stmt):
+        self.statement = stmt
+        return [_Row(row) for row in self._rows]
+
+
+async def test_history_is_the_newest_messages_oldest_first():
+    # What the database returns for ORDER BY created_at DESC LIMIT 3 over m1..m5.
+    conn = _QueryConn([{"content": f"m{i}"} for i in (5, 4, 3)])
+
+    history = await session_manager.get_conversation_history(
+        conn, uuid.uuid4(), limit=3
+    )
+
+    compiled = conn.statement.compile(dialect=postgresql.dialect())
+    assert "ORDER BY chat_messages.created_at DESC" in str(compiled)
+    assert 3 in compiled.params.values()
+    assert [m["content"] for m in history] == ["m3", "m4", "m5"]
+
+
+def test_the_history_route_returns_the_newest_messages_oldest_first(monkeypatch):
+    session_id = uuid.uuid4()
+    conn = _QueryConn([{"content": f"m{i}"} for i in (5, 4)])
+
+    async def load_session(conn, session_id):
+        return {"id": session_id, "user_id": USER.id}
+
+    async def db():
+        yield conn
+
+    monkeypatch.setattr(chat_router, "load_session", load_session)
+    app.dependency_overrides = {get_current_user: lambda: USER, get_db: db}
+    try:
+        r = TestClient(app).get(f"/chat/history?session_id={session_id}&limit=2")
+    finally:
+        app.dependency_overrides = {}
+
+    assert r.status_code == 200
+    assert [m["content"] for m in r.json()["messages"]] == ["m4", "m5"]
+
+
+class _RecordingLLM:
+    """Answers every call with plain text and keeps the messages it was sent."""
+
+    def __init__(self):
+        self.calls: list[list] = []
+
+    def bind_tools(self, tools):
+        return self
+
+    async def astream(self, messages):
+        self.calls.append(messages)
+        yield AIMessageChunk(content="Sure.")
+
+
+def _transcript(messages) -> list[tuple[str, str]]:
+    return [(type(m).__name__, m.content) for m in messages[1:]]  # skip the system prompt
+
+
+async def test_the_current_message_reaches_the_llm_once(stored_turn, monkeypatch):
+    llm = _RecordingLLM()
+    monkeypatch.setattr(chat_service, "get_llm", lambda: llm)
+
+    await chat_service.process_message(
+        ChatRequest(message="log 20 pages of Dune"), USER, conn=None
+    )
+
+    assert _transcript(llm.calls[0]) == [("HumanMessage", "log 20 pages of Dune")]
+
+
+async def test_earlier_turns_come_before_the_current_message(stored_turn, monkeypatch):
+    llm = _RecordingLLM()
+    monkeypatch.setattr(chat_service, "get_llm", lambda: llm)
+
+    await chat_service.process_message(
+        ChatRequest(message="log 20 pages of Dune"), USER, conn=None
+    )
+    await chat_service.process_message(ChatRequest(message="undo that"), USER, conn=None)
+
+    assert _transcript(llm.calls[1]) == [
+        ("HumanMessage", "log 20 pages of Dune"),
+        ("AIMessage", "Sure."),
+        ("HumanMessage", "undo that"),
+    ]
 
 
 def test_a_malformed_session_id_is_rejected_at_the_boundary():

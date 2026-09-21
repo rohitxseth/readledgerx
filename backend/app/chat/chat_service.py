@@ -11,6 +11,7 @@ from app.chat.session_manager import (
     load_session,
     update_session,
 )
+from app.core.dependencies import get_llm
 from app.schemas.chat import ChatRequest, MessageType
 from app.schemas.models import User
 
@@ -28,8 +29,8 @@ async def process_message(
     metadata = session["metadata"] or {}
 
     user_input, user_content = _build_user_input(body)
-    await add_message(conn, session_id, "user", user_content, body.message_type.value)
     history = await get_conversation_history(conn, session_id, 30)
+    await add_message(conn, session_id, "user", user_content, body.message_type.value)
 
     async def stream_callback(element: dict) -> None:
         if element.get("type") == "text_chunk":
@@ -42,6 +43,7 @@ async def process_message(
             )
 
     agent = RouterAgent(
+        llm=get_llm(),
         metadata=metadata,
         context={
             "conn": conn,

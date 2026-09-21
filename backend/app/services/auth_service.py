@@ -1,15 +1,11 @@
-from app.services.password_hasher import BcryptPasswordHasher, IPasswordHasher
+from app.services.password_hasher import IPasswordHasher
 from app.services.token_service import TokenService
 
 
 class AuthService:
-    def __init__(
-        self,
-        hasher: IPasswordHasher | None = None,
-        token_service: TokenService | None = None,
-    ):
-        self._hasher = hasher or BcryptPasswordHasher()
-        self._token_service = token_service or TokenService()
+    def __init__(self, hasher: IPasswordHasher, token_service: TokenService):
+        self._hasher = hasher
+        self._token_service = token_service
 
     def hash_password(self, password: str) -> str:
         return self._hasher.hash(password)

@@ -8,7 +8,8 @@ and view their reading progress — all via a conversational chat interface.
 - **Books** are sourced from the Google Books API and cached in the local database.
 - When the user names a book they were just shown in search results, the backend
   resolves it to that exact volume — pass the title through as they said it.
-- **Reading sessions** are append-only page-count entries tied to a user and book.
+- **Reading sessions** are page-count entries tied to a user and book. Logging adds
+  one; undo deletes the newest, and reducing or lowering progress trims the newest.
 - **Progress** is computed by summing reading session pages against the book's total page count.
 - All UI is Backend-Driven UI (BDUI) — tools return rich elements (cards, tables,
   action buttons) that the frontend renders directly.

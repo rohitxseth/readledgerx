@@ -15,6 +15,7 @@ from app.core.dependencies import (
 )
 from app.main import app
 from app.services.auth_service import AuthService
+from app.services.token_service import TokenService
 from tests.conftest import FakeAuditRepository, FakeUserRepository
 
 
@@ -34,7 +35,9 @@ def repos():
     app.dependency_overrides = {
         get_user_repository: lambda: users,
         get_audit_repository: lambda: audit,
-        get_auth_service: lambda: AuthService(hasher=_PlainHasher()),
+        get_auth_service: lambda: AuthService(
+            hasher=_PlainHasher(), token_service=TokenService()
+        ),
     }
     yield users, audit
     app.dependency_overrides = {}
@@ -89,7 +92,7 @@ async def test_a_password_over_72_bytes_is_a_422_not_a_500(repos, path):
 
 
 async def test_a_72_byte_password_works_with_real_bcrypt(repos):
-    app.dependency_overrides[get_auth_service] = lambda: AuthService()
+    del app.dependency_overrides[get_auth_service]  # the real provider: bcrypt
     password = "é" * 36  # exactly 72 bytes
 
     registered = await _post(

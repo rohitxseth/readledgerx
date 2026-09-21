@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.config.llm_config import get_langchain_llm
@@ -24,6 +25,10 @@ from app.services.token_service import TokenService
 security = HTTPBearer()
 
 
+def get_llm() -> BaseChatModel | None:
+    return get_langchain_llm()
+
+
 def get_auth_service() -> AuthService:
     return AuthService(hasher=BcryptPasswordHasher(), token_service=TokenService())
 
@@ -40,7 +45,7 @@ def get_book_service(conn: AsyncConnection = Depends(get_db)) -> BookService:
     return BookService(
         repo=BookRepository(conn),
         search_client=GoogleBooksClient(),
-        intelligence=BookIntelligenceService(get_langchain_llm()),
+        intelligence=BookIntelligenceService(get_llm()),
     )
 
 

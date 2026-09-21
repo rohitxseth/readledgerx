@@ -29,9 +29,9 @@ class _RecordingLLM:
 
 
 def _agent(llm="recording"):
-    agent = RouterAgent(metadata={}, context={})
-    agent.llm = _RecordingLLM() if llm == "recording" else llm
-    return agent
+    return RouterAgent(
+        llm=_RecordingLLM() if llm == "recording" else llm, metadata={}, context={}
+    )
 
 
 def _text(message: str) -> dict:
@@ -234,9 +234,7 @@ def _streaming_agent(llm, events):
     async def record(element):
         events.append(element)
 
-    agent = RouterAgent(metadata={}, context={}, stream_callback=record)
-    agent.llm = llm
-    return agent
+    return RouterAgent(llm=llm, metadata={}, context={}, stream_callback=record)
 
 
 @pytest.fixture(autouse=True)

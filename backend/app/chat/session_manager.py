@@ -100,7 +100,9 @@ async def get_conversation_history(
     stmt = (
         select(chat_messages)
         .where(chat_messages.c.session_id == session_id)
-        .order_by(chat_messages.c.created_at)
+        .order_by(desc(chat_messages.c.created_at))
         .limit(limit)
     )
-    return [dict(row._mapping) for row in await conn.execute(stmt)]
+    messages = [dict(row._mapping) for row in await conn.execute(stmt)]
+    messages.reverse()
+    return messages
